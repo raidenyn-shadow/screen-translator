@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="error_screenshot_failed">Could not take a screenshot. Try again in a moment.</string>
+    <string name="error_save_failed">Could not save the screenshot.</string>
+    <string name="error_launch_failed">Could not open Google Lens.</string>
+</resources>
