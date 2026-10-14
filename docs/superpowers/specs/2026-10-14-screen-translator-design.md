@@ -21,8 +21,8 @@ Functional:
   Google Lens with the image pre-loaded.
 - F2: Zero additional actions in our app per use — no permission dialogs,
   confirmations, or visible UI.
-- F3: A pre-capture delay (default 400 ms, tunable) so the collapsing sidebar
-  animation is not caught in the screenshot.
+- F3: A pre-capture delay (default 400 ms, a code constant in v1 — no settings
+  UI) so the collapsing sidebar animation is not caught in the screenshot.
 - F4: If the accessibility service is disabled or was killed, the tap routes to the
   setup screen with guidance instead of failing silently.
 - F5: Setup screen shows: accessibility service status with a link to settings,
@@ -50,7 +50,8 @@ Non-functional:
 4. `onScreenshotTaken` delivers the hardware bitmap → saved to
    `cacheDir/captures/<timestamp>.png` off the main thread.
 5. `LensLauncher` wraps the file in a FileProvider URI and fires the fallback chain.
-6. Lens opens fullscreen with the image loaded; the user translates inside Lens
+6. Lens opens with the image loaded (expected fullscreen; actual sidebar-tap
+   window behavior is verified in probe P2); the user translates inside Lens
    (Lens's own UI may still need one tap — accepted limitation, we cannot drive a
    third-party app).
 
@@ -88,7 +89,9 @@ Single Gradle module, five small units:
 - Captures live only in the app's private cache dir.
 - Lens receives a content URI with `FLAG_GRANT_READ_URI_PERMISSION` (temporary,
   scope-limited grant), never a world-readable file.
-- Stale captures are deleted on every app launch; nothing is ever written to the
+- Stale captures are deleted on every app launch: all files remaining under
+  `cacheDir/captures/` are removed at app start (captures must survive until the
+  next launch, because Lens may re-read the URI). Nothing is ever written to the
   gallery or MediaStore.
 - No analytics, no network access.
 
@@ -97,7 +100,8 @@ Single Gradle module, five small units:
 - **Lens intents are undocumented and drift with Google app updates** → ordered
   fallback chain ending in the share sheet; candidate components are verified on the
   physical device during the probe and kept in one constant.
-- **Sidebar overlay caught in the screenshot** → 400 ms pre-capture delay, tunable.
+- **Sidebar overlay caught in the screenshot** → 400 ms pre-capture delay (code
+  constant, adjustable in probe P2).
 - **ColorOS may open sidebar-launched apps in a floating window / kill background
   services** → verified in the probe; setup guides battery exemption and pinning;
   dead service routes to the setup screen (F4).
