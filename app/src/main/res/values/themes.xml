@@ -9,4 +9,10 @@
         <item name="android:windowAnimationStyle">@null</item>
     </style>
 
+    <!-- The real setup page: a normal opaque window, unlike the invisible trampoline. -->
+    <style name="Theme.ScreenTranslator.Setup" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowIsTranslucent">false</item>
+        <item name="android:windowDisablePreview">false</item>
+    </style>
+
 </resources>

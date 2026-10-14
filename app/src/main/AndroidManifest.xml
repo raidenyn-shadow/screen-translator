@@ -4,6 +4,7 @@
     <application
         android:name=".App"
         android:label="Screen Translator"
+        android:icon="@mipmap/ic_launcher"
         android:allowBackup="false">
 
         <activity
@@ -21,7 +22,7 @@
         <activity
             android:name=".ui.SetupActivity"
             android:exported="false"
-            android:theme="@style/Theme.ScreenTranslator.Trampoline" />
+            android:theme="@style/Theme.ScreenTranslator.Setup" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -3,4 +3,14 @@
     <string name="error_screenshot_failed">Could not take a screenshot. Try again in a moment.</string>
     <string name="error_save_failed">Could not save the screenshot.</string>
     <string name="error_launch_failed">Could not open Google Lens.</string>
+
+    <!-- Setup screen -->
+    <string name="setup_title">Screen Translator</string>
+    <string name="setup_service_status_on">Capture service: on</string>
+    <string name="setup_service_status_off">Capture service: off</string>
+    <string name="setup_enable_service">Enable capture service</string>
+    <string name="setup_battery_settings">Battery settings</string>
+    <string name="setup_run_test_capture">Run test capture</string>
+    <string name="setup_how_to_title">How to use it</string>
+    <string name="setup_how_to">1. Add the app to Smart Sidebar (Settings → Smart Sidebar → customize).\n2. Pin/lock the app in recents so ColorOS keeps it running.\n3. Enable the capture service once. A sidebar tap then captures the screen and opens Google Lens.</string>
 </resources>
