@@ -1,2 +1,7 @@
 .worktrees/
 .superpowers/
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
