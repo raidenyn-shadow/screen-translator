@@ -36,13 +36,17 @@ class CaptureOrchestratorTest {
 
     @After fun clean() { dir.listFiles()?.forEach { it.delete() } }
 
-    /** Returns [bitmap], or throws [failure] when scripted, recording every call. */
-    private class RecordingTaker(private val bitmap: Bitmap, private val failure: Exception? = null) : ScreenshotTaker {
+    /** Returns [bitmap], throwing the scripted [failure] once before switching back, recording every call. */
+    private class RecordingTaker(private val bitmap: Bitmap, failure: Throwable? = null) : ScreenshotTaker {
         var calls = 0
+        private var pendingFailure = failure
 
         override suspend fun take(): Bitmap {
             calls++
-            failure?.let { throw it }
+            pendingFailure?.let {
+                pendingFailure = null
+                throw it
+            }
             return bitmap
         }
     }
@@ -162,6 +166,32 @@ class CaptureOrchestratorTest {
         assertFalse(second)
         assertEquals(1, taker.calls)           // one screenshot...
         assertEquals(1, starter.intents.size)  // ...and one launch, no duplicates
+        assertTrue(errors.isEmpty())
+    }
+
+    @Test
+    fun outOfMemorySurfacesErrorAndNextDispatchWorks() {
+        // A copy OOM resumes take() with an OutOfMemoryError (an Error, not an Exception):
+        // it must surface as ScreenshotFailed, not crash, and release the in-flight guard.
+        val errors = mutableListOf<CaptureError>()
+        val taker = RecordingTaker(bitmap, failure = OutOfMemoryError("screen-sized bitmap"))
+        val starter = RecordingStarter()
+        val orchestrator = newOrchestrator(taker, starter, errors) { }
+
+        val first = orchestrator.tryDispatch()
+        testScope.advanceUntilPipelineIdle()
+
+        assertTrue(first)
+        assertEquals(listOf(CaptureError.ScreenshotFailed), errors)
+        assertTrue(starter.intents.isEmpty())
+
+        errors.clear()
+        val second = orchestrator.tryDispatch()   // the guard must have been released
+        testScope.advanceUntilPipelineIdle()
+
+        assertTrue(second)
+        assertEquals(2, taker.calls)
+        assertEquals(1, starter.intents.size)      // the retry captured and launched
         assertTrue(errors.isEmpty())
     }
 }

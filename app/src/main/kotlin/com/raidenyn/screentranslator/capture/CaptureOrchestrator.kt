@@ -54,15 +54,17 @@ class CaptureOrchestrator(
 
     private suspend fun captureOnce() {
         delayer(delayMs)
+        // The catches take Throwable, not Exception: a copy or PNG-encode OOM (an Error) is
+        // the pipeline's most likely failure and must surface as a toast, not kill the process.
         val bitmap = try {
             taker.take()
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             onError(CaptureError.ScreenshotFailed)
             return
         }
         val uri = try {
             store.save(bitmap)
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             onError(CaptureError.SaveFailed)
             return
         }

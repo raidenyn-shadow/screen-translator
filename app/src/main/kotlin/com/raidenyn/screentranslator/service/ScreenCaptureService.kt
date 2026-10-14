@@ -100,14 +100,22 @@ class ScreenCaptureService : AccessibilityService() {
                             val buffer = result.hardwareBuffer
                             try {
                                 if (continuation.isActive) {
-                                    val hardware = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
-                                    if (hardware == null) {
-                                        continuation.resumeWithException(
-                                            IllegalStateException("screenshot buffer could not be wrapped")
-                                        )
-                                    } else {
-                                        // Hardware bitmaps cannot be PNG-compressed: copy to software memory.
-                                        continuation.resume(hardware.copy(Bitmap.Config.ARGB_8888, false))
+                                    try {
+                                        val hardware = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
+                                        if (hardware == null) {
+                                            continuation.resumeWithException(
+                                                IllegalStateException("screenshot buffer could not be wrapped")
+                                            )
+                                        } else {
+                                            // Hardware bitmaps cannot be PNG-compressed: copy to software memory.
+                                            continuation.resume(hardware.copy(Bitmap.Config.ARGB_8888, false))
+                                        }
+                                    } catch (t: Throwable) {
+                                        // The copy is the pipeline's largest allocation and OOM is an Error,
+                                        // not an Exception: resume anyway so the failure reaches the
+                                        // orchestrator instead of escaping the callback (killing the process)
+                                        // or leaving take() suspended forever.
+                                        continuation.resumeWithException(t)
                                     }
                                 }
                             } finally {
