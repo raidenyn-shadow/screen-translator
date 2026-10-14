@@ -98,7 +98,7 @@ class TrampolineActivityTest {
         assertTrue(trampoline.isFinishing)
         assertNull(nextStartedBy(trampoline))               // the service is live: no setup screen
         testScope.testScheduler.advanceUntilIdle()          // the dispatched pipeline parks at the gate
-        assertEquals(listOf(CAPTURE_DELAY_MS), dispatches) // the tap dispatched exactly one capture
+        assertEquals(listOf(CAPTURE_DELAY_MS), dispatches)  // the tap dispatched exactly one capture
     }
 
     @Test
