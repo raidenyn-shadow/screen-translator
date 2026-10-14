@@ -15,6 +15,7 @@ import com.raidenyn.screentranslator.capture.CaptureError
 import com.raidenyn.screentranslator.capture.CaptureOrchestrator
 import com.raidenyn.screentranslator.capture.CaptureStore
 import com.raidenyn.screentranslator.capture.ScreenshotTaker
+import com.raidenyn.screentranslator.capture.ScreenshotUnsupportedException
 import com.raidenyn.screentranslator.lens.IntentStarter
 import com.raidenyn.screentranslator.lens.LensLauncher
 import kotlinx.coroutines.CoroutineScope
@@ -75,22 +76,14 @@ class ScreenCaptureService : AccessibilityService() {
         )
     }
 
-    private val CaptureError.labelRes: Int
-        get() = when (this) {
-            CaptureError.ScreenshotFailed -> R.string.error_screenshot_failed
-            CaptureError.SaveFailed -> R.string.error_save_failed
-            CaptureError.LaunchFailed -> R.string.error_launch_failed
-        }
-
     /** Calls the accessibility screenshot API and copies the result out of hardware memory. */
     private class RealScreenshotTaker(private val service: ScreenCaptureService) : ScreenshotTaker {
 
         override suspend fun take(): Bitmap {
             // The display-scoped takeScreenshot overload only exists from API 33; on older
-            // devices surface an error instead of crashing on a missing method.
-            check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                "AccessibilityService.takeScreenshot requires API 33"
-            }
+            // devices throw the dedicated type so the toast states the permanent condition
+            // instead of a "try again" hint.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) throw ScreenshotUnsupportedException()
             return suspendCancellableCoroutine { continuation ->
                 service.takeScreenshot(
                     Display.DEFAULT_DISPLAY,
@@ -148,3 +141,15 @@ class ScreenCaptureService : AccessibilityService() {
         fun requestCapture(): Boolean = instance?.orchestrator()?.tryDispatch() ?: false
     }
 }
+
+/**
+ * Maps each capture failure onto its toast copy, one-to-one. Internal so tests can pin
+ * the version-guard failure to the dedicated "unsupported" string.
+ */
+internal val CaptureError.labelRes: Int
+    get() = when (this) {
+        CaptureError.ScreenshotUnsupported -> R.string.error_screenshot_unsupported
+        CaptureError.ScreenshotFailed -> R.string.error_screenshot_failed
+        CaptureError.SaveFailed -> R.string.error_save_failed
+        CaptureError.LaunchFailed -> R.string.error_launch_failed
+    }

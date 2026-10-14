@@ -9,6 +9,7 @@ import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import com.raidenyn.screentranslator.lens.IntentStarter
 import com.raidenyn.screentranslator.lens.LensLauncher
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.TestScope
@@ -22,6 +23,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.coroutineContext
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -47,6 +49,14 @@ class CaptureOrchestratorTest {
                 pendingFailure = null
                 throw it
             }
+            return bitmap
+        }
+    }
+
+    /** Cancels the calling pipeline's job, then hands back the bitmap — the service died mid-take. */
+    private class CancellingTaker(private val bitmap: Bitmap) : ScreenshotTaker {
+        override suspend fun take(): Bitmap {
+            coroutineContext[Job]!!.cancel()
             return bitmap
         }
     }
@@ -193,5 +203,70 @@ class CaptureOrchestratorTest {
         assertEquals(2, taker.calls)
         assertEquals(1, starter.intents.size)      // the retry captured and launched
         assertTrue(errors.isEmpty())
+    }
+
+    @Test
+    fun cancellationFromTakerSurfacesNoError() {
+        // The service being disabled or killed resumes take() with a CancellationException:
+        // that is not a failure — no toast may fire and the coroutine must stay cancelled.
+        val errors = mutableListOf<CaptureError>()
+        val taker = RecordingTaker(bitmap, failure = CancellationException("service disabled"))
+        val starter = RecordingStarter()
+        val orchestrator = newOrchestrator(taker, starter, errors) { }
+
+        val dispatched = orchestrator.tryDispatch()
+        val pipeline = testScope.coroutineContext[Job]!!.children.single()
+        testScope.advanceUntilPipelineIdle()
+
+        assertTrue(dispatched)
+        assertTrue(errors.isEmpty())         // no spurious ScreenshotFailed toast
+        assertFalse(pipeline.isActive)      // the pipeline did not keep running...
+        assertTrue(pipeline.isCancelled)    // ...it completed as a cancelled coroutine
+
+        val retried = orchestrator.tryDispatch()   // the rethrow still released the guard
+        testScope.advanceUntilPipelineIdle()
+
+        assertTrue(retried)
+        assertEquals(2, taker.calls)              // the next dispatch captured...
+        assertEquals(1, starter.intents.size)     // ...and launched, still no failure toast
+        assertTrue(errors.isEmpty())
+    }
+
+    @Test
+    fun cancellationDuringSaveSurfacesNoError() {
+        // The service dies right after the screenshot: save()'s withContext then throws
+        // CancellationException on the cancelled job, which must not surface as SaveFailed.
+        val errors = mutableListOf<CaptureError>()
+        val starter = RecordingStarter()
+        val orchestrator = newOrchestrator(CancellingTaker(bitmap), starter, errors) { }
+
+        val dispatched = orchestrator.tryDispatch()
+        val pipeline = testScope.coroutineContext[Job]!!.children.single()
+        testScope.advanceUntilPipelineIdle()
+
+        assertTrue(dispatched)
+        assertTrue(errors.isEmpty())         // no spurious SaveFailed toast
+        assertEquals(0, dir.listFiles()?.size ?: 0)   // the store never wrote a capture
+        assertTrue(starter.intents.isEmpty())         // and nothing was launched
+        assertFalse(pipeline.isActive)
+        assertTrue(pipeline.isCancelled)     // the pipeline completed as a cancelled coroutine
+    }
+
+    @Test
+    fun unsupportedApiSurfacesDedicatedError() {
+        // Below API 33 the taker's version guard throws the dedicated exception: the
+        // permanent condition must surface as ScreenshotUnsupported, not the retry hint.
+        val errors = mutableListOf<CaptureError>()
+        val taker = RecordingTaker(bitmap, failure = ScreenshotUnsupportedException())
+        val starter = RecordingStarter()
+        val orchestrator = newOrchestrator(taker, starter, errors) { }
+
+        val dispatched = orchestrator.tryDispatch()
+        testScope.advanceUntilPipelineIdle()
+
+        assertTrue(dispatched)
+        assertEquals(listOf(CaptureError.ScreenshotUnsupported), errors)
+        assertEquals(0, dir.listFiles()?.size ?: 0)   // the store was never touched
+        assertTrue(starter.intents.isEmpty())         // and nothing was launched
     }
 }

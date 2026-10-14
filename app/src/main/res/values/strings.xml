@@ -3,6 +3,7 @@
     <string name="error_screenshot_failed">Could not take a screenshot. Try again in a moment.</string>
     <string name="error_save_failed">Could not save the screenshot.</string>
     <string name="error_launch_failed">Could not open Google Lens.</string>
+    <string name="error_screenshot_unsupported">Screen capture is not supported on this Android version. Requires Android 13+.</string>
 
     <!-- Setup screen -->
     <string name="setup_title">Screen Translator</string>

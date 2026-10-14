@@ -3,6 +3,7 @@ package com.raidenyn.screentranslator.capture
 import android.graphics.Bitmap
 import com.raidenyn.screentranslator.lens.LensLauncher
 import com.raidenyn.screentranslator.lens.LensLaunchResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -18,10 +19,19 @@ fun interface ScreenshotTaker {
 
 /** Which step of the capture pipeline failed, mapped one-to-one onto a user-facing toast. */
 sealed interface CaptureError {
+    /** The screenshot step is impossible on this device: its Android version predates the API. */
+    data object ScreenshotUnsupported : CaptureError
     data object ScreenshotFailed : CaptureError
     data object SaveFailed : CaptureError
     data object LaunchFailed : CaptureError
 }
+
+/**
+ * Thrown by a [ScreenshotTaker] on a device whose Android version predates the accessibility
+ * screenshot API; mapped to [CaptureError.ScreenshotUnsupported] so the toast states the
+ * permanent condition instead of a "try again" hint.
+ */
+class ScreenshotUnsupportedException : IllegalStateException("takeScreenshot requires API 33")
 
 /**
  * Runs the capture pipeline on [scope]: wait [delayMs] → screenshot → save → hand to Lens.
@@ -56,14 +66,23 @@ class CaptureOrchestrator(
         delayer(delayMs)
         // The catches take Throwable, not Exception: a copy or PNG-encode OOM (an Error) is
         // the pipeline's most likely failure and must surface as a toast, not kill the process.
+        // CancellationException is rethrown first: the service being torn down mid-pipeline
+        // is not a failure, must not post a toast, and must leave the coroutine cancelled.
         val bitmap = try {
             taker.take()
+        } catch (c: CancellationException) {
+            throw c
+        } catch (_: ScreenshotUnsupportedException) {
+            onError(CaptureError.ScreenshotUnsupported)
+            return
         } catch (_: Throwable) {
             onError(CaptureError.ScreenshotFailed)
             return
         }
         val uri = try {
             store.save(bitmap)
+        } catch (c: CancellationException) {
+            throw c
         } catch (_: Throwable) {
             onError(CaptureError.SaveFailed)
             return

@@ -18,6 +18,11 @@ How it works, in order:
    package-restricted `ACTION_SEND` → system share sheet, so the user always ends up with
    the screenshot in Lens.
 
+## Requirements
+
+Capture requires Android 13 (API 33) or newer. The app installs on Android 11–12 but
+screen capture is unsupported there.
+
 ## Install
 
 Build the debug APK, then install it:
