@@ -10,8 +10,8 @@ import androidx.test.core.app.ApplicationProvider
 import com.raidenyn.screentranslator.lens.IntentStarter
 import com.raidenyn.screentranslator.lens.LensLauncher
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.advanceUntilIdle
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -58,19 +58,20 @@ class CaptureOrchestratorTest {
     }
 
     /**
-     * Advances virtual time until the dispatched pipeline completes. Plain [advanceUntilIdle]
-     * is not enough: [CaptureStore.save] hops to a real Dispatchers.IO thread, invisible to
-     * the scheduler, so real time is yielded between advances until the child job finishes.
+     * Advances virtual time until the dispatched pipeline completes. A plain scheduler
+     * [TestCoroutineScheduler.advanceUntilIdle] is not enough: [CaptureStore.save] hops to a
+     * real Dispatchers.IO thread, invisible to the scheduler, so real time is yielded between
+     * advances until the child job finishes.
      */
     private fun TestScope.advanceUntilPipelineIdle() {
         val scopeJob = coroutineContext[Job]!!
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
         while (scopeJob.children.any { it.isActive }) {
-            advanceUntilIdle()
+            testScheduler.advanceUntilIdle()
             check(System.nanoTime() < deadline) { "capture pipeline did not complete in time" }
             Thread.sleep(1)
         }
-        advanceUntilIdle()
+        testScheduler.advanceUntilIdle()
     }
 
     private fun newOrchestrator(
