@@ -46,13 +46,18 @@ const val TRANSLATE_PACKAGE = "com.google.android.apps.translate"
 const val LENS_ACTIVITY = "com.google.android.apps.gsa.staticplugins.lens.LensActivity"
 
 enum class ProbeCandidate(val label: String, val needsCapture: Boolean) {
-    IMPLICIT_TRANSLATE("D1: ImplicitTranslateSearchEntrypoint (direct, no capture)", false),
-    LIVE_DEEPLINK_DIRECT("D2: Lens Live deeplink activity (direct, no capture)", false),
-    LENS_URL_BASE("D3: googleapp://lens (no capture)", false),
-    LENS_URL_LIVE("D4: googleapp://lens/live (no capture)", false),
-    LENS_URL_TRANSLATE("D5: googleapp://lens/translate (no capture)", false),
-    LENS_SHARE_MODE("D6: LensShareEntryPoint + screenshot + lens_mode=translate", true),
-    GOOGLE_APP_SHARE("C: Google app image share (reference, works today)", true),
+    IMPLICIT_TRANSLATE("D1: ImplicitTranslateSearchEntrypoint (direct)", false),
+    LIVE_DEEPLINK_DIRECT("D2: Lens Live deeplink activity (direct)", false),
+    URL_MODE_TRANSLATE("E1: googleapp://lens?mode=translate", false),
+    URL_MODE_LIVE("E2: googleapp://lens?mode=live", false),
+    URL_LENS_MODE("E3: googleapp://lens?lens_mode=translate", false),
+    URL_FEATURE("E4: googleapp://lens?feature=translate", false),
+    URL_ENTRY("E5: googleapp://lens?entry=translate", false),
+    SHARE_EXTRA_MODE("F1: LensShareEntryPoint + screenshot + extra mode=translate", true),
+    SHARE_EXTRA_ENTRY_POINT("F2: + extra entry_point=translate", true),
+    SHARE_EXTRA_LENS_ENTRY("F3: + extra lens_entry_point=translate", true),
+    SHARE_EXTRA_SOURCE("F4: + extra launch_source=translate", true),
+    GOOGLE_APP_SHARE("C: Google app image share (reference)", true),
 }
 
 /** Builds the intent for one probe candidate; [uri] is only required for capture candidates. */
@@ -68,18 +73,24 @@ fun probeIntent(candidate: ProbeCandidate, uri: Uri?, resolver: ContentResolver)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         configure()
     }
+    fun shareEntry(uri: Uri?, extra: Pair<String, String>) = sendTo(requireNotNull(uri)) {
+        setClassName(GSA_PACKAGE, "com.google.android.apps.search.lens.LensShareEntryPointActivity")
+        putExtra(extra.first, extra.second)
+    }
     return when (candidate) {
         ProbeCandidate.IMPLICIT_TRANSLATE ->
             gsaComponent("com.google.android.googlequicksearchbox.ImplicitTranslateSearchEntrypointInternal")
         ProbeCandidate.LIVE_DEEPLINK_DIRECT ->
             gsaComponent("com.google.android.apps.search.lens.live.deeplink.LiveActivity")
-        ProbeCandidate.LENS_URL_BASE -> view("googleapp://lens")
-        ProbeCandidate.LENS_URL_LIVE -> view("googleapp://lens/live")
-        ProbeCandidate.LENS_URL_TRANSLATE -> view("googleapp://lens/translate")
-        ProbeCandidate.LENS_SHARE_MODE -> sendTo(requireNotNull(uri)) {
-            setClassName(GSA_PACKAGE, "com.google.android.apps.search.lens.LensShareEntryPointActivity")
-            putExtra("lens_mode", "translate")
-        }
+        ProbeCandidate.URL_MODE_TRANSLATE -> view("googleapp://lens?mode=translate")
+        ProbeCandidate.URL_MODE_LIVE -> view("googleapp://lens?mode=live")
+        ProbeCandidate.URL_LENS_MODE -> view("googleapp://lens?lens_mode=translate")
+        ProbeCandidate.URL_FEATURE -> view("googleapp://lens?feature=translate")
+        ProbeCandidate.URL_ENTRY -> view("googleapp://lens?entry=translate")
+        ProbeCandidate.SHARE_EXTRA_MODE -> shareEntry(uri, "mode" to "translate")
+        ProbeCandidate.SHARE_EXTRA_ENTRY_POINT -> shareEntry(uri, "entry_point" to "translate")
+        ProbeCandidate.SHARE_EXTRA_LENS_ENTRY -> shareEntry(uri, "lens_entry_point" to "translate")
+        ProbeCandidate.SHARE_EXTRA_SOURCE -> shareEntry(uri, "launch_source" to "translate")
         ProbeCandidate.GOOGLE_APP_SHARE -> sendTo(requireNotNull(uri)) { setPackage(GSA_PACKAGE) }
     }
 }
@@ -235,5 +246,42 @@ fun componentDump(context: Context): String = buildString {
             )
         }
     }
+    appendLine()
+
+    // Brute-force deep link grammar sweep: hundreds of resolver queries over plausible
+    // scheme/host/path combinations, printing only the combinations something answers.
+    appendLine("== brute-force deep link sweep (hits only) ==")
+    var queried = 0
+    val hits = mutableListOf<String>()
+    for (scheme in listOf("googleapp", "google", "gsa", "lens", "gelp")) {
+        for (host in listOf("lens", "live", "lens-live", "translate", "screentranslate", "omnient", "lensient", "search", "assistant")) {
+            for (path in listOf("", "/lens", "/live", "/translate", "/screen", "/camera", "/scan")) {
+                val url = "$scheme://$host$path"
+                val resolvers = pm.queryIntentActivities(Intent(Intent.ACTION_VIEW, Uri.parse(url)), 0)
+                queried++
+                if (resolvers.isNotEmpty()) {
+                    hits.add(
+                        "  HIT $url -> ${resolvers.joinToString { "${it.activityInfo.packageName}/${it.activityInfo.name.substringAfterLast('.')}" }}"
+                    )
+                }
+            }
+        }
+    }
+    for (action in listOf(
+        "com.google.android.apps.search.lens.action.LIVE",
+        "com.google.android.apps.search.lens.action.TRANSLATE",
+        "com.google.android.apps.search.lens.action.LENS",
+        "com.google.android.lens.action.LENS",
+        "com.google.android.lens.action.TRANSLATE",
+        "com.google.android.apps.gsa.action.TRANSLATE",
+    )) {
+        val resolvers = pm.queryIntentActivities(Intent(action), 0)
+        queried++
+        if (resolvers.isNotEmpty()) {
+            hits.add("  HIT action $action -> ${resolvers.joinToString { "${it.activityInfo.packageName}/${it.activityInfo.name.substringAfterLast('.')}" }}")
+        }
+    }
+    hits.forEach(::appendLine)
+    appendLine("  ($queried combinations queried, ${hits.size} hits)")
     appendLine()
 }
