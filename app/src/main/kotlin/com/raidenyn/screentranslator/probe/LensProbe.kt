@@ -46,15 +46,16 @@ const val TRANSLATE_PACKAGE = "com.google.android.apps.translate"
 const val LENS_ACTIVITY = "com.google.android.apps.gsa.staticplugins.lens.LensActivity"
 
 const val LENS_SHARE_ENTRY = "com.google.android.apps.search.lens.LensShareEntryPointActivity"
+const val LENS_EXPORTED = "com.google.android.apps.search.lens.LensExportedActivity"
 
 enum class ProbeCandidate(val label: String, val needsCapture: Boolean) {
-    G1_FULLSCREEN("G1: share entry + mode=translate + fullscreen=true", true),
-    G2_EXPANDED("G2: + mode=translate + expanded=true", true),
-    G3_IMMERSIVE("G3: + mode=translate + immersive=true", true),
-    G4_FULL_SCREEN("G4: + mode=translate + full_screen=true", true),
-    G5_FOCUS("G5: + mode=translate + focus=translate", true),
-    G6_NONSENSE("G6: control - nonsense extra zzz_auto=translate", true),
-    G7_NO_EXTRA("G7: control - share entry, NO extras (compare smallness)", true),
+    GOOGLE_LENS_URL("H1: google://lens (allowlist gate test)", false),
+    LENS_EXPORTED_FOR_RESULT("H2: LensExportedActivity for-result (allowlist gate test)", false),
+    STANDALONE_LENS_SHARE("H3: standalone Lens app + screenshot", true),
+    SEARCH_IMAGE_SHARE("H4: SearchImageActivity + screenshot", true),
+    SHARE_TEXT_EXTRA("H5: share entry + screenshot + EXTRA_TEXT=translate", true),
+    MEDIASTORE_SHARE("H6: share entry + screenshot from public gallery URI (like the OEM flow)", true),
+    SHARE_NO_EXTRA("G7: share entry + screenshot, no extras (current best, reference)", true),
 }
 
 /** Builds the intent for one probe candidate; [uri] is only required for capture candidates. */
@@ -66,18 +67,26 @@ fun probeIntent(candidate: ProbeCandidate, uri: Uri?, resolver: ContentResolver)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         configure()
     }
-    fun shareEntry(uri: Uri?, vararg extras: Pair<String, String>) = sendTo(requireNotNull(uri)) {
+    fun shareEntry(uri: Uri?, configure: Intent.() -> Unit = {}) = sendTo(requireNotNull(uri)) {
         setClassName(GSA_PACKAGE, LENS_SHARE_ENTRY)
-        extras.forEach { putExtra(it.first, it.second) }
+        configure()
     }
     return when (candidate) {
-        ProbeCandidate.G1_FULLSCREEN -> shareEntry(uri, "mode" to "translate", "fullscreen" to "true")
-        ProbeCandidate.G2_EXPANDED -> shareEntry(uri, "mode" to "translate", "expanded" to "true")
-        ProbeCandidate.G3_IMMERSIVE -> shareEntry(uri, "mode" to "translate", "immersive" to "true")
-        ProbeCandidate.G4_FULL_SCREEN -> shareEntry(uri, "mode" to "translate", "full_screen" to "true")
-        ProbeCandidate.G5_FOCUS -> shareEntry(uri, "mode" to "translate", "focus" to "translate")
-        ProbeCandidate.G6_NONSENSE -> shareEntry(uri, "zzz_auto" to "translate")
-        ProbeCandidate.G7_NO_EXTRA -> shareEntry(uri)
+        ProbeCandidate.GOOGLE_LENS_URL -> Intent(Intent.ACTION_VIEW, Uri.parse("google://lens"))
+            .setPackage(GSA_PACKAGE)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        ProbeCandidate.LENS_EXPORTED_FOR_RESULT -> Intent()
+            .setComponent(android.content.ComponentName(GSA_PACKAGE, LENS_EXPORTED))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        ProbeCandidate.STANDALONE_LENS_SHARE -> sendTo(requireNotNull(uri)) {
+            setClassName(LENS_STANDALONE_PACKAGE, "com.google.vr.apps.ornament.app.lens.LensLauncherActivity")
+        }
+        ProbeCandidate.SEARCH_IMAGE_SHARE -> sendTo(requireNotNull(uri)) {
+            setClassName(GSA_PACKAGE, "com.google.android.apps.lens.SearchImageActivity")
+        }
+        ProbeCandidate.SHARE_TEXT_EXTRA -> shareEntry(uri) { putExtra(Intent.EXTRA_TEXT, "translate") }
+        ProbeCandidate.MEDIASTORE_SHARE -> shareEntry(uri)
+        ProbeCandidate.SHARE_NO_EXTRA -> shareEntry(uri)
     }
 }
 

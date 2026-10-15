@@ -2,11 +2,15 @@ package com.raidenyn.screentranslator.ui
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,6 +45,13 @@ import com.raidenyn.screentranslator.service.ScreenCaptureService
 class ProbeActivity : ComponentActivity() {
 
     private var status by mutableStateOf<String?>(null)
+
+    /** H2 launches LensExportedActivity FOR RESULT so it sees a non-null calling package. */
+    private val lensForResult =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            status = "LensExportedActivity closed with result code ${it.resultCode} " +
+                "(per decompiles: 1 = caller not allowlisted, 3 = empty caller, -1 = Lens ready)."
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -105,6 +116,11 @@ class ProbeActivity : ComponentActivity() {
     }
 
     private fun tryCandidate(candidate: ProbeCandidate) {
+        if (candidate == ProbeCandidate.LENS_EXPORTED_FOR_RESULT) {
+            status = "Launching LensExportedActivity for result… watch the result code below."
+            lensForResult.launch(probeIntent(candidate, null, contentResolver))
+            return
+        }
         if (!candidate.needsCapture) {
             try {
                 startActivity(probeIntent(candidate, null, contentResolver))
@@ -122,15 +138,45 @@ class ProbeActivity : ComponentActivity() {
         status = "Capturing screen…"
         LensProbe(service).requestCapture(
             onCaptured = { uri ->
+                val shareUri = if (candidate == ProbeCandidate.MEDIASTORE_SHARE) {
+                    toGalleryUri(uri)
+                } else {
+                    uri
+                }
+                if (shareUri == null) {
+                    status = "Copying the screenshot into the gallery failed."
+                    return@requestCapture
+                }
                 try {
-                    startActivity(probeIntent(candidate, uri, contentResolver))
-                    status = "Launched: ${candidate.label}. Did the translation appear automatically?"
+                    startActivity(probeIntent(candidate, shareUri, contentResolver))
+                    status = if (candidate == ProbeCandidate.MEDIASTORE_SHARE) {
+                        "Launched: ${candidate.label} (screenshot saved to Pictures/ScreenTranslatorProbe). Behavior?"
+                    } else {
+                        "Launched: ${candidate.label}. Behavior?"
+                    }
                 } catch (t: Exception) {
                     status = "Launch failed for ${candidate.label}: ${t.message}"
                 }
             },
             onError = { status = "Capture failed: $it" }
         )
+    }
+
+    /** Copies the private capture into MediaStore, mirroring the OEM flow that saves to the gallery. */
+    private fun toGalleryUri(uri: Uri): Uri? = try {
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "lens_probe_${System.currentTimeMillis()}.png")
+            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+            put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/ScreenTranslatorProbe")
+        }
+        val target = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            ?: return null
+        contentResolver.openInputStream(uri)?.use { input ->
+            contentResolver.openOutputStream(target)?.use { input.copyTo(it) }
+        }
+        target
+    } catch (e: Exception) {
+        null
     }
 
     private fun dumpAndCopy() {
