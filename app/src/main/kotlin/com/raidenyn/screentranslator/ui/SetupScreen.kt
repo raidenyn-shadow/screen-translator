@@ -33,7 +33,7 @@ import com.raidenyn.screentranslator.service.ScreenCaptureService
 
 /**
  * One-time setup page: live capture-service status, links into the system settings
- * the user touches once, a test capture, and the Smart Sidebar how-to. Shown by
+ * the user touches once, and the Smart Sidebar how-to. Shown by
  * [SetupActivity] whenever the service is not running.
  */
 @Composable
@@ -81,20 +81,6 @@ fun SetupScreen() {
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(stringResource(R.string.setup_battery_settings))
-                }
-                Button(
-                    onClick = { ScreenCaptureService.requestCapture() },
-                    enabled = serviceOn,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(stringResource(R.string.setup_run_test_capture))
-                }
-                // SPIKE: entry into the throwaway Lens translate probe
-                OutlinedButton(
-                    onClick = { context.startActivity(Intent(context, ProbeActivity::class.java)) },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(stringResource(R.string.setup_open_probe))
                 }
                 Text(
                     text = stringResource(R.string.setup_how_to_title),

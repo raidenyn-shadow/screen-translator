@@ -10,6 +10,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.raidenyn.screentranslator.lens.IntentStarter
 import com.raidenyn.screentranslator.lens.LensLauncher
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.TestScope
@@ -97,7 +98,9 @@ class CaptureOrchestratorTest {
         delayer = delayer,
         taker = taker,
         store = store,
-        launcher = LensLauncher(context.contentResolver, starter),
+        launcher = { uri ->
+            if (LensLauncher(context.contentResolver, starter).launch(uri)) null else CaptureError.LaunchFailed
+        },
         onError = { errors.add(it) },
         scope = testScope,
     )
@@ -268,5 +271,45 @@ class CaptureOrchestratorTest {
         assertEquals(listOf(CaptureError.ScreenshotUnsupported), errors)
         assertEquals(0, dir.listFiles()?.size ?: 0)   // the store was never touched
         assertTrue(starter.intents.isEmpty())         // and nothing was launched
+    }
+
+    @Test fun duplicateTapsRemainBlockedUntilTranslationSelectionFinishes() {
+        val entered = CompletableDeferred<Uri>()
+        val selected = CompletableDeferred<CaptureError?>()
+        val errors = mutableListOf<CaptureError>()
+        val taker = RecordingTaker(bitmap)
+        val orchestrator = CaptureOrchestrator(
+            delayer = {}, taker = taker, store = store,
+            launcher = { uri -> entered.complete(uri); selected.await() },
+            onError = { errors.add(it) }, scope = testScope,
+        )
+        assertTrue(orchestrator.tryDispatch())
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30)
+        while (!entered.isCompleted) {
+            testScope.testScheduler.advanceUntilIdle()
+            check(System.nanoTime() < deadline) { "screenshot did not reach translation" }
+            Thread.sleep(1)
+        }
+        assertFalse(orchestrator.tryDispatch())
+        selected.complete(null)
+        testScope.advanceUntilPipelineIdle()
+        assertEquals(1, taker.calls)
+        assertTrue(errors.isEmpty())
+
+        assertTrue(orchestrator.tryDispatch())
+        testScope.advanceUntilPipelineIdle()
+        assertEquals(2, taker.calls)
+    }
+
+    @Test fun translationSelectionFailureReachesTheUserFacingErrorPath() {
+        val errors = mutableListOf<CaptureError>()
+        val orchestrator = CaptureOrchestrator(
+            delayer = {}, taker = RecordingTaker(bitmap), store = store,
+            launcher = { CaptureError.TranslationFailed },
+            onError = { errors.add(it) }, scope = testScope,
+        )
+        assertTrue(orchestrator.tryDispatch())
+        testScope.advanceUntilPipelineIdle()
+        assertEquals(listOf(CaptureError.TranslationFailed), errors)
     }
 }

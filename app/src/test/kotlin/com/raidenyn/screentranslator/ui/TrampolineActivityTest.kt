@@ -24,6 +24,7 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.util.ReflectionHelpers
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -56,7 +57,10 @@ class TrampolineActivityTest {
         CaptureOrchestrator(
             taker = RecordingTaker(),
             store = CaptureStore.from(context),
-            launcher = LensLauncher(context.contentResolver, RecordingStarter()),
+            launcher = { uri ->
+                LensLauncher(context.contentResolver, RecordingStarter()).launch(uri)
+                null
+            },
             onError = { },
             scope = testScope,
             delayer = { dispatches.add(it); gate.await() },
@@ -91,7 +95,7 @@ class TrampolineActivityTest {
         val service = attachedService()
         ScreenCaptureService.instance = service
         val dispatches = mutableListOf<Long>()
-        service.orchestratorOverride = recordingOrchestrator(dispatches)
+        ReflectionHelpers.setField(service, "realOrchestrator", recordingOrchestrator(dispatches))
 
         val trampoline = Robolectric.buildActivity(TrampolineActivity::class.java).create().get()
 
@@ -107,7 +111,7 @@ class TrampolineActivityTest {
         ScreenCaptureService.instance = service
         val dispatches = mutableListOf<Long>()
         val orchestrator = recordingOrchestrator(dispatches)
-        service.orchestratorOverride = orchestrator
+        ReflectionHelpers.setField(service, "realOrchestrator", orchestrator)
 
         assertTrue(orchestrator.tryDispatch())             // a capture is already in flight
         testScope.testScheduler.advanceUntilIdle()          // it parks at the gate, holding the in-flight guard

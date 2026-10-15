@@ -1,8 +1,7 @@
 package com.raidenyn.screentranslator.capture
 
 import android.graphics.Bitmap
-import com.raidenyn.screentranslator.lens.LensLauncher
-import com.raidenyn.screentranslator.lens.LensLaunchResult
+import android.net.Uri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -12,7 +11,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** Wait between the request tap and the screenshot, letting the sidebar dismissal animation finish. */
 const val CAPTURE_DELAY_MS = 400L
 
-/** Indirection over the accessibility screenshot API so the pipeline can run in tests. */
+/** Captures the visible display as a software bitmap. */
 fun interface ScreenshotTaker {
     suspend fun take(): Bitmap
 }
@@ -24,6 +23,8 @@ sealed interface CaptureError {
     data object ScreenshotFailed : CaptureError
     data object SaveFailed : CaptureError
     data object LaunchFailed : CaptureError
+    data object TranslationFailed : CaptureError
+    data object AccessibilityUnavailable : CaptureError
 }
 
 /**
@@ -34,7 +35,7 @@ sealed interface CaptureError {
 class ScreenshotUnsupportedException : IllegalStateException("takeScreenshot requires API 33")
 
 /**
- * Runs the capture pipeline on [scope]: wait [delayMs] → screenshot → save → hand to Lens.
+ * Runs the capture pipeline on [scope]: wait → screenshot → save → launch and select Translate.
  * [tryDispatch] may be called from anywhere; overlapping requests are dropped by a
  * synchronous in-flight guard, and every failure path surfaces through [onError].
  */
@@ -43,7 +44,7 @@ class CaptureOrchestrator(
     private val delayer: suspend (Long) -> Unit = { delay(it) },
     private val taker: ScreenshotTaker,
     private val store: CaptureStore,
-    private val launcher: LensLauncher,
+    private val launcher: suspend (Uri) -> CaptureError?,
     private val onError: (CaptureError) -> Unit,
     private val scope: CoroutineScope,
 ) {
@@ -87,8 +88,6 @@ class CaptureOrchestrator(
             onError(CaptureError.SaveFailed)
             return
         }
-        if (launcher.launch(uri) is LensLaunchResult.Failed) {
-            onError(CaptureError.LaunchFailed)
-        }
+        launcher(uri)?.let(onError)
     }
 }

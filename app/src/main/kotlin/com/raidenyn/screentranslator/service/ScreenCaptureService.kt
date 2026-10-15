@@ -20,84 +20,93 @@ import com.raidenyn.screentranslator.capture.ScreenshotTaker
 import com.raidenyn.screentranslator.capture.ScreenshotUnsupportedException
 import com.raidenyn.screentranslator.lens.IntentStarter
 import com.raidenyn.screentranslator.lens.LensLauncher
-import com.raidenyn.screentranslator.probe.LensTranslateProbeSession
-import com.raidenyn.screentranslator.probe.LensTranslateProbeStatus
-import com.raidenyn.screentranslator.probe.ProbeCandidate
-import com.raidenyn.screentranslator.probe.probeIntent
+import com.raidenyn.screentranslator.lens.LensTranslationSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * Captures screenshots for the sidebar pipeline. The explicit J1 diagnostic also
- * reads Google Lens controls and performs at most one Translate click. Window
- * inspection is active only during that bounded, explicitly requested diagnostic.
+ * Captures the display, shares it with Lens, and selects Translate once. Window
+ * inspection runs only for the bounded translation attempt following a capture.
  */
 class ScreenCaptureService : AccessibilityService() {
 
     private lateinit var scope: CoroutineScope
     private var realOrchestrator: CaptureOrchestrator? = null
-    private var translateProbe: LensTranslateProbeSession? = null
+    private var translationSession: LensTranslationSession? = null
+    private val main = Handler(Looper.getMainLooper())
 
-    /** Test seam: when set, [orchestrator] returns this instead of the real pipeline. */
-    internal var orchestratorOverride: CaptureOrchestrator? = null
-
-    /** The capture pipeline to dispatch on, overridable for tests. */
-    fun orchestrator(): CaptureOrchestrator =
-        orchestratorOverride ?: realOrchestrator ?: buildOrchestrator().also { realOrchestrator = it }
+    private fun orchestrator(): CaptureOrchestrator =
+        realOrchestrator ?: buildOrchestrator().also { realOrchestrator = it }
 
     override fun onCreate() {
         super.onCreate()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        LensTranslateProbeStatus.load(this)
         instance = this
     }
 
     override fun onDestroy() {
-        cancelTranslateProbe("Capture service stopped.")
+        translationSession?.cancel()
         instance = null
         realOrchestrator = null
         scope.cancel()
         super.onDestroy()
     }
 
-    /** J1 polls only while armed; passive events themselves never trigger inspection or clicks. */
+    /** Passive events never start a capture or arm UI interaction. */
     override fun onAccessibilityEvent(event: AccessibilityEvent) {}
 
-    override fun onInterrupt() { cancelTranslateProbe("Accessibility service interrupted.") }
+    override fun onInterrupt() { translationSession?.cancel() }
 
-    /** Called on the main thread after the diagnostic screenshot has been saved. */
-    fun launchTranslateProbe(uri: Uri): Boolean {
-        if ((serviceInfo?.capabilities ?: 0) and
-            AccessibilityServiceInfo.CAPABILITY_CAN_RETRIEVE_WINDOW_CONTENT == 0) {
-            LensTranslateProbeStatus.publish(this,
-                "J1 cannot inspect UI. Turn Screen Translator off and on in Accessibility settings after updating.")
-            return false
+    private suspend fun launchAndTranslate(uri: Uri, launcher: LensLauncher): CaptureError? =
+        withContext<CaptureError?>(Dispatchers.Main.immediate) {
+            if ((serviceInfo?.capabilities ?: 0) and
+                AccessibilityServiceInfo.CAPABILITY_CAN_RETRIEVE_WINDOW_CONTENT == 0) {
+                return@withContext CaptureError.AccessibilityUnavailable
+            }
+            suspendCancellableCoroutine<CaptureError?> { continuation ->
+                lateinit var session: LensTranslationSession
+                session = LensTranslationSession(
+                    readWindow = { rootInActiveWindow },
+                    onFinished = { result ->
+                        if (translationSession === session) translationSession = null
+                        if (continuation.isActive) {
+                            continuation.resume(when (result) {
+                                LensTranslationSession.Result.SELECTED,
+                                LensTranslationSession.Result.CANCELED -> null
+                                LensTranslationSession.Result.LAUNCH_FAILED -> CaptureError.LaunchFailed
+                                LensTranslationSession.Result.SELECTION_FAILED -> CaptureError.TranslationFailed
+                            })
+                        }
+                    },
+                )
+                translationSession = session
+                continuation.invokeOnCancellation {
+                    main.post {
+                        if (translationSession === session) {
+                            translationSession = null
+                            session.cancel()
+                        }
+                    }
+                }
+                if (continuation.isActive) session.start { launcher.launch(uri) }
+            }
         }
-        val session = translateProbe ?: LensTranslateProbeSession(
-            readWindow = { rootInActiveWindow },
-            onReport = { LensTranslateProbeStatus.publish(this, it) },
-        ).also { translateProbe = it }
-        return session.start {
-            startActivity(probeIntent(ProbeCandidate.SHARE_AUTO_TRANSLATE, uri, contentResolver))
-        }
-    }
-
-    fun cancelTranslateProbe(reason: String) { translateProbe?.cancel(reason) }
 
     private fun buildOrchestrator(): CaptureOrchestrator {
-        val main = Handler(Looper.getMainLooper())
+        val launcher = LensLauncher(contentResolver, IntentStarter(this::startActivity))
         return CaptureOrchestrator(
             taker = RealScreenshotTaker(this),
             store = CaptureStore.from(this),
-            launcher = LensLauncher(contentResolver, ContextStarter(this::startActivity)),
+            launcher = { uri -> launchAndTranslate(uri, launcher) },
             onError = { error ->
-                main.post { Toast.makeText(this, error.labelRes, Toast.LENGTH_LONG).show() }
+                main.post { Toast.makeText(this, error.labelRes, Toast.LENGTH_SHORT).show() }
             },
             scope = scope,
         )
@@ -156,9 +165,6 @@ class ScreenCaptureService : AccessibilityService() {
         }
     }
 
-    /** Starts intents straight through the service context; LensLauncher sets NEW_TASK itself. */
-    private fun interface ContextStarter : IntentStarter
-
     companion object {
         /** The currently bound service; null whenever it is disabled or being torn down. */
         @Volatile
@@ -170,13 +176,14 @@ class ScreenCaptureService : AccessibilityService() {
 }
 
 /**
- * Maps each capture failure onto its toast copy, one-to-one. Internal so tests can pin
- * the version-guard failure to the dedicated "unsupported" string.
+ * Maps each capture/translation failure onto its user-facing toast message.
  */
 internal val CaptureError.labelRes: Int
     get() = when (this) {
         CaptureError.ScreenshotUnsupported -> R.string.error_screenshot_unsupported
         CaptureError.ScreenshotFailed -> R.string.error_screenshot_failed
         CaptureError.SaveFailed -> R.string.error_save_failed
-        CaptureError.LaunchFailed -> R.string.error_launch_failed
+    CaptureError.LaunchFailed -> R.string.error_launch_failed
+    CaptureError.TranslationFailed -> R.string.error_translation_failed
+    CaptureError.AccessibilityUnavailable -> R.string.error_accessibility_unavailable
     }

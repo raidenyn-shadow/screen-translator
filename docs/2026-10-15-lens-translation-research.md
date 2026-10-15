@@ -2,6 +2,12 @@
 
 Research date: 2026-10-15.
 
+**Historical research:** the user verified the J1 flow in `v0.3.6-probe`.
+Version `0.4.0` promotes that image-share plus one-shot Translate selection to the
+normal sidebar action. The in-app probe screen, experimental routes, control
+inventories, and diagnostic-report storage described below have been removed.
+See the root README for current installation and usage instructions.
+
 ## Result
 
 **Use Google Translate's camera deep link to enter translation-only Lens:**
@@ -38,8 +44,9 @@ dump was partial; the configuration above was present in the supplied portion.
 The user subsequently confirmed that selecting a screenshot from the gallery
 inside I1 immediately translates it and produces exactly the desired view.
 This validates the manual translation-camera → gallery → screenshot path on this
-configuration. Automatic screenshot handoff and repeated/cold launches remain
-unverified.
+configuration. The user subsequently tested J1 in release `v0.3.6-probe` and
+confirmed that the automatic screenshot-to-translation flow works. Repeated/cold
+launches have not been separately reported.
 
 **Important scope:** this opens the translation **camera**, not a supplied
 screenshot. It answers how to open Lens focused on translation. It does not yet
@@ -213,7 +220,9 @@ After confirming the manual import result, the user approved sharing the
 screenshot and automatically selecting the visible Translate control via
 accessibility. The J1 diagnostic implements this experiment, extending the prior
 screenshot-only service with UI-retrieval capability. It is not a newly discovered
-image-to-translation intent, and runtime success on the phone is still pending.
+image-to-translation intent. After installing `v0.3.6-probe`, the user confirmed:
+“Bingo! J1 works like a sharm.” This is user-reported end-to-end runtime success on
+the OnePlus PYB110 configuration listed above, not just ACTION_CLICK acceptance.
 
 J1 arms inspection only after its screenshot has been saved and immediately before
 launching the known image-share component. It polls the active window every 200 ms

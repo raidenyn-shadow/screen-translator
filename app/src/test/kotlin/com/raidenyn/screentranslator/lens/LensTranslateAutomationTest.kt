@@ -1,4 +1,4 @@
-package com.raidenyn.screentranslator.probe
+package com.raidenyn.screentranslator.lens
 
 import android.view.accessibility.AccessibilityNodeInfo
 import org.junit.Assert.assertEquals
@@ -109,14 +109,13 @@ class LensTranslateAutomationTest {
         assertEquals(LensTranslateAutomation.Outcome.CANCELED, automation.outcome)
     }
 
-    @Test fun timeoutPreventsALateClickAndKeepsUsefulControlDiagnostics() {
+    @Test fun timeoutPreventsALateClick() {
         automation.start()
         automation.inspect(tree(node("Search", clickable = true)))
         now = 10_000
         automation.inspect(tree(node("Translate", clickable = true)))
         assertTrue(clicks.isEmpty())
         assertEquals(LensTranslateAutomation.Outcome.TIMED_OUT, automation.outcome)
-        assertTrue(automation.report.contains("Search"))
     }
 
     @Test fun rejectedClickIsNotRepeatedOrReportedAsSuccess() {
@@ -163,15 +162,14 @@ class LensTranslateAutomationTest {
         automation.inspect(tree(node("Translate", clickable = true), node("Translate", clickable = true)))
         assertTrue(clicks.isEmpty())
         assertTrue(automation.active)
-        assertTrue(automation.report.contains("ambiguous"))
     }
 
     @Test fun explicitCancellationPreventsClicksUntilANewStart() {
         automation.start()
-        automation.cancel("launch failed")
+        automation.cancel()
         automation.inspect(tree(node("Translate", clickable = true)))
         assertTrue(clicks.isEmpty())
-        assertTrue(automation.report.contains("launch failed"))
+        assertEquals(LensTranslateAutomation.Outcome.CANCELED, automation.outcome)
         automation.start()
         automation.inspect(tree(node("Translate", clickable = true)))
         assertEquals(1, clicks.size)

@@ -4,6 +4,8 @@
     <string name="error_save_failed">Could not save the screenshot.</string>
     <string name="error_launch_failed">Could not open Google Lens.</string>
     <string name="error_screenshot_unsupported">Screen capture is not supported on this Android version. Requires Android 13+.</string>
+    <string name="error_translation_failed">Could not select Translate in Google Lens.</string>
+    <string name="error_accessibility_unavailable">Turn Screen Translator off and on in Accessibility settings to enable automatic translation.</string>
 
     <!-- Setup screen -->
     <string name="setup_title">Screen Translator</string>
@@ -11,18 +13,7 @@
     <string name="setup_service_status_off">Capture service: off</string>
     <string name="setup_enable_service">Enable capture service</string>
     <string name="setup_battery_settings">Battery settings</string>
-    <string name="setup_run_test_capture">Run test capture</string>
     <string name="setup_how_to_title">How to use it</string>
-    <string name="setup_how_to">1. Add the app to Smart Sidebar (Settings → Smart Sidebar → customize).\n2. Pin/lock the app in recents so ColorOS keeps it running.\n3. Enable the capture service once. A sidebar tap then captures the screen and opens Google Lens.</string>
-    <string name="setup_open_probe">Lens translate probe (diagnostics)</string>
-    <string name="service_accessibility_description">Captures screenshots for Google Lens. When you explicitly run the J1 diagnostic, also inspects Lens controls for up to 10 seconds and activates Translate at most once.</string>
-
-    <!-- SPIKE: Lens translate probe screen -->
-    <string name="probe_title">Lens translate probe</string>
-    <string name="probe_instructions">After updating, turn the capture accessibility service OFF and ON once using the settings button below to enable UI interaction. J1 captures this screen, opens Lens, then looks for its English Translate button/filter for up to 10 seconds and activates it once. Do not tap Lens while it runs. Return here to see the J1 report at the top; it is also included in the dump. I1 is the working translation-camera reference (no screenshot). H1/H2 do not capture; the other probes require the capture service.</string>
-    <string name="probe_accessibility_settings">Accessibility settings (turn service off/on after update)</string>
-    <string name="probe_try_section">1. Try candidates</string>
-    <string name="probe_dump_section">2. Component dump</string>
-    <string name="probe_dump_copy">Dump and copy to clipboard</string>
-    <string name="probe_dump_share">Share dump</string>
+    <string name="setup_how_to">1. Add the app to Smart Sidebar (Settings → Smart Sidebar → customize).\n2. Pin/lock the app in recents so ColorOS keeps it running.\n3. Enable the capture service once. A sidebar tap then captures the screen, opens Google Lens, and selects Translate automatically.</string>
+    <string name="service_accessibility_description">Captures your screen and opens it in Google Lens. After each capture, inspects Lens controls for up to 10 seconds and selects Translate at most once.</string>
 </resources>

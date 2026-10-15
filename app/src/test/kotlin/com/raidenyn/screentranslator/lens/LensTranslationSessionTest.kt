@@ -1,4 +1,4 @@
-package com.raidenyn.screentranslator.probe
+package com.raidenyn.screentranslator.lens
 
 import android.content.ActivityNotFoundException
 import android.os.Looper
@@ -17,44 +17,54 @@ import java.time.Duration
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 @LooperMode(LooperMode.Mode.PAUSED)
-class LensTranslateProbeSessionTest {
-    private val reports = mutableListOf<String>()
+class LensTranslationSessionTest {
+    private val results = mutableListOf<LensTranslationSession.Result>()
     private var reads = 0
-    private val session = LensTranslateProbeSession(
+    private val session = LensTranslationSession(
         readWindow = { reads++; null },
-        onReport = { reports.add(it) },
+        onFinished = { results.add(it) },
     )
 
     @Test fun timesOutEvenWhenNoAccessibilityEventsArrive() {
-        assertTrue(session.start {})
+        assertTrue(session.start { true })
         assertTrue(session.active)
+        assertTrue(results.isEmpty())
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
         assertFalse(session.active)
         assertTrue(reads > 0)
-        assertTrue(reports.last().contains("TIMED_OUT"))
+        assertEquals(listOf(LensTranslationSession.Result.SELECTION_FAILED), results)
     }
 
-    @Test fun failedLaunchDisarmsWithoutReadingAnyWindows() {
+    @Test fun failedLaunchFinishesWithoutReadingAnyWindows() {
         assertFalse(session.start { throw ActivityNotFoundException("missing Lens") })
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
         assertEquals(0, reads)
         assertFalse(session.active)
-        assertTrue(reports.last().contains("launch failed"))
+        assertEquals(listOf(LensTranslationSession.Result.LAUNCH_FAILED), results)
+    }
+
+    @Test fun rejectedLaunchReportsFailureOnlyOnce() {
+        assertFalse(session.start { false })
+        session.cancel()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
+        assertEquals(0, reads)
+        assertEquals(listOf(LensTranslationSession.Result.LAUNCH_FAILED), results)
     }
 
     @Test fun cancellationRemovesScheduledWorkAndDuplicateStartsDoNotLaunch() {
         var launches = 0
-        assertTrue(session.start { launches++ })
-        assertFalse(session.start { launches++ })
+        assertTrue(session.start { launches++; true })
+        assertFalse(session.start { launches++; true })
         assertEquals(1, launches)
-        session.cancel("service interrupted")
+        session.cancel()
+        session.cancel()
         val previousReads = reads
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
         assertEquals(previousReads, reads)
-        assertTrue(reports.last().contains("service interrupted"))
+        assertEquals(listOf(LensTranslationSession.Result.CANCELED), results)
     }
 
-    @Test fun acceptedClickStopsPollingAndPublishesTheOutcome() {
+    @Test fun acceptedClickStopsPollingAndFinishesOnlyOnce() {
         val target = AccessibilityNodeInfo().apply {
             packageName = GSA_PACKAGE
             className = "android.widget.Button"
@@ -64,27 +74,27 @@ class LensTranslateProbeSessionTest {
             isVisibleToUser = true
         }
         var clicks = 0
-        val clickSession = LensTranslateProbeSession(
+        val clickSession = LensTranslationSession(
             readWindow = { target },
-            onReport = { reports.add(it) },
+            onFinished = { results.add(it) },
             automation = LensTranslateAutomation(click = { clicks++; true }),
         )
-        assertTrue(clickSession.start {})
+        assertTrue(clickSession.start { true })
         assertEquals(0, clicks)
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
         assertEquals(1, clicks)
         assertFalse(clickSession.active)
-        assertTrue(reports.last().contains("CLICK_ACCEPTED"))
+        assertEquals(listOf(LensTranslationSession.Result.SELECTED), results)
     }
 
     @Test fun inaccessibleWindowStopsWithoutCrashingTheService() {
-        val brokenSession = LensTranslateProbeSession(
+        val brokenSession = LensTranslationSession(
             readWindow = { throw SecurityException("disconnected") },
-            onReport = { reports.add(it) },
+            onFinished = { results.add(it) },
         )
-        assertTrue(brokenSession.start {})
+        assertTrue(brokenSession.start { true })
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
         assertFalse(brokenSession.active)
-        assertTrue(reports.last().contains("Cannot inspect Lens UI"))
+        assertEquals(listOf(LensTranslationSession.Result.SELECTION_FAILED), results)
     }
 }
