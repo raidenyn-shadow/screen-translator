@@ -49,6 +49,7 @@ const val LENS_SHARE_ENTRY = "com.google.android.apps.search.lens.LensShareEntry
 const val LENS_EXPORTED = "com.google.android.apps.search.lens.LensExportedActivity"
 
 enum class ProbeCandidate(val label: String, val needsCapture: Boolean) {
+    TRANSLATE_CAMERA("I1: translation-only Lens via Google Translate (camera, no screenshot)", false),
     GOOGLE_LENS_URL("H1: google://lens (allowlist gate test)", false),
     LENS_EXPORTED_FOR_RESULT("H2: LensExportedActivity for-result (allowlist gate test)", false),
     STANDALONE_LENS_SHARE("H3: standalone Lens app + screenshot", true),
@@ -72,12 +73,19 @@ fun probeIntent(candidate: ProbeCandidate, uri: Uri?, resolver: ContentResolver)
         configure()
     }
     return when (candidate) {
+        // Google Translate's own camera shortcut. Translate builds the Lens SDK
+        // translation parameters and calls Lens for result as the real caller.
+        // This is a camera entry point, NOT an image-sharing contract.
+        ProbeCandidate.TRANSLATE_CAMERA -> Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("googletranslate:///open/camera?sl=auto&tl=en")
+        ).setPackage(TRANSLATE_PACKAGE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         ProbeCandidate.GOOGLE_LENS_URL -> Intent(Intent.ACTION_VIEW, Uri.parse("google://lens"))
             .setPackage(GSA_PACKAGE)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         ProbeCandidate.LENS_EXPORTED_FOR_RESULT -> Intent()
             .setComponent(android.content.ComponentName(GSA_PACKAGE, LENS_EXPORTED))
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            // NEW_TASK cancels the result request and defeats the caller diagnostic.
         ProbeCandidate.STANDALONE_LENS_SHARE -> sendTo(requireNotNull(uri)) {
             setClassName(LENS_STANDALONE_PACKAGE, "com.google.vr.apps.ornament.app.lens.LensLauncherActivity")
         }
@@ -208,6 +216,11 @@ fun componentDump(context: Context): String = buildString {
     }
     resolvers("ACTION_VIEW https://lens.google.com/", Intent(Intent.ACTION_VIEW, Uri.parse("https://lens.google.com/")))
     resolvers("ACTION_VIEW googleapp://lens", Intent(Intent.ACTION_VIEW, Uri.parse("googleapp://lens")))
+    resolvers(
+        "Google Translate translation-only camera shortcut (no screenshot)",
+        Intent(Intent.ACTION_VIEW, Uri.parse("googletranslate:///open/camera?sl=auto&tl=en"))
+            .setPackage(TRANSLATE_PACKAGE)
+    )
 
     // Deep-link / action resolution matrix: which URLs and actions the device answers,
     // discovered WITHOUT launching anything.

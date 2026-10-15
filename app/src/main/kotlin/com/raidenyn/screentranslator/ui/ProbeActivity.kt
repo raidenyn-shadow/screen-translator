@@ -51,7 +51,8 @@ class ProbeActivity : ComponentActivity() {
     private val lensForResult =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
             status = "LensExportedActivity closed with result code ${it.resultCode} " +
-                "(per decompiles: 1 = caller not allowlisted, 3 = empty caller, -1 = Lens ready)."
+                "(SDK decompiles: 1 = unavailable / possible caller restriction, " +
+                "3 = empty caller; 0 = canceled / inconclusive. Codes depend on Google app version)."
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -119,13 +120,22 @@ class ProbeActivity : ComponentActivity() {
     private fun tryCandidate(candidate: ProbeCandidate) {
         if (candidate == ProbeCandidate.LENS_EXPORTED_FOR_RESULT) {
             status = "Launching LensExportedActivity for result… watch the result code below."
-            lensForResult.launch(probeIntent(candidate, null, contentResolver))
+            try {
+                lensForResult.launch(probeIntent(candidate, null, contentResolver))
+            } catch (e: Exception) {
+                status = "Launch failed for ${candidate.label}: ${e.message}"
+            }
             return
         }
         if (!candidate.needsCapture) {
             try {
                 startActivity(probeIntent(candidate, null, contentResolver))
-                status = "Launched: ${candidate.label}. What happened on screen?"
+                status = if (candidate == ProbeCandidate.TRANSLATE_CAMERA) {
+                    "Requested translation-only Lens through Google Translate (auto → English). " +
+                        "This opens the camera, not the screenshot. Check that translation is selected."
+                } else {
+                    "Launched: ${candidate.label}. What happened on screen?"
+                }
             } catch (t: Exception) {
                 status = "Failed ${candidate.label}: ${t.message}"
             }

@@ -18,7 +18,7 @@
 
     <!-- SPIKE: Lens translate probe screen -->
     <string name="probe_title">Lens translate probe</string>
-    <string name="probe_instructions">Each button captures this screen (it contains sample foreign text below) and opens one candidate app. Watch whether the translation appears WITHOUT any extra tap. The service must be on.</string>
+    <string name="probe_instructions">I1 opens the translation-only camera through Google Translate; it does not capture the screen or require the capture service. H1 and H2 test Lens entry restrictions without a capture. The other buttons capture the sample text below and require the capture service. Check the visible result: an accepted launch alone does not prove that translation is selected.</string>
     <string name="probe_try_section">1. Try candidates</string>
     <string name="probe_dump_section">2. Component dump</string>
     <string name="probe_dump_copy">Dump and copy to clipboard</string>

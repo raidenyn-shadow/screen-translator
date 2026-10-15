@@ -52,6 +52,18 @@ Failures surface as toasts (screenshot failed / save failed / Lens launch failed
 service is disabled or was killed, the same tap opens the setup screen instead, with a
 live service status chip and a *Run test capture* button.
 
+## Translation-focused Lens launch research
+
+The diagnostics screen includes **I1**, which opens Google Translate's own
+translation-camera shortcut: `googletranslate:///open/camera?sl=auto&tl=en`.
+This is a source-backed way to request translation-only Lens, but opens the
+camera rather than preloading a screenshot. The **H2** caller-eligibility probe
+also now preserves the Activity Result request by omitting `NEW_TASK`.
+
+See [the research findings](docs/2026-10-15-lens-translation-research.md) for APK
+evidence, launch commands, screenshot limitations, and device acceptance checks.
+The new route has not yet been verified on the OnePlus.
+
 ## Probe checklist (run on the OnePlus 16, update code from results)
 
 `LensCandidates.COMPONENTS` (in
