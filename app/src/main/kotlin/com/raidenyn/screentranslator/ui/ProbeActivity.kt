@@ -105,6 +105,15 @@ class ProbeActivity : ComponentActivity() {
     }
 
     private fun tryCandidate(candidate: ProbeCandidate) {
+        if (!candidate.needsCapture) {
+            try {
+                startActivity(probeIntent(candidate, null, contentResolver))
+                status = "Launched: ${candidate.label}. What happened on screen?"
+            } catch (t: Exception) {
+                status = "Failed ${candidate.label}: ${t.message}"
+            }
+            return
+        }
         val service = ScreenCaptureService.instance
         if (service == null) {
             status = "Capture service is off — enable it in the setup screen first."

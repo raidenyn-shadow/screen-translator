@@ -45,37 +45,42 @@ const val LENS_STANDALONE_PACKAGE = "com.google.ar.lens"
 const val TRANSLATE_PACKAGE = "com.google.android.apps.translate"
 const val LENS_ACTIVITY = "com.google.android.apps.gsa.staticplugins.lens.LensActivity"
 
-enum class ProbeCandidate(val label: String) {
-    TRANSLATE_SHARE("A: Google Translate image share"),
-    LENS_ACTIVITY_MODE("B1: LensActivity + lens_mode=translate extra"),
-    LENS_ACTIVITY_STREAM("B2: LensActivity + image stream"),
-    LENS_ACTIVITY_VIEW("B3: LensActivity + ACTION_VIEW image"),
-    GOOGLE_APP_SHARE("C: Google app image share (current flow)"),
+enum class ProbeCandidate(val label: String, val needsCapture: Boolean) {
+    IMPLICIT_TRANSLATE("D1: ImplicitTranslateSearchEntrypoint (direct, no capture)", false),
+    LIVE_DEEPLINK_DIRECT("D2: Lens Live deeplink activity (direct, no capture)", false),
+    LENS_URL_BASE("D3: googleapp://lens (no capture)", false),
+    LENS_URL_LIVE("D4: googleapp://lens/live (no capture)", false),
+    LENS_URL_TRANSLATE("D5: googleapp://lens/translate (no capture)", false),
+    LENS_SHARE_MODE("D6: LensShareEntryPoint + screenshot + lens_mode=translate", true),
+    GOOGLE_APP_SHARE("C: Google app image share (reference, works today)", true),
 }
 
-/** Builds the intent for one probe candidate around a freshly captured screenshot URI. */
-fun probeIntent(candidate: ProbeCandidate, uri: Uri, resolver: ContentResolver): Intent {
-    val send = {
-        Intent(Intent.ACTION_SEND).apply {
-            type = "image/png"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            clipData = ClipData.newUri(resolver, "screenshot", uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
+/** Builds the intent for one probe candidate; [uri] is only required for capture candidates. */
+fun probeIntent(candidate: ProbeCandidate, uri: Uri?, resolver: ContentResolver): Intent {
+    fun gsaComponent(cls: String) =
+        Intent().setClassName(GSA_PACKAGE, cls).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    fun view(url: String) =
+        Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    fun sendTo(uri: Uri, configure: Intent.() -> Unit = {}) = Intent(Intent.ACTION_SEND).apply {
+        type = "image/png"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        clipData = ClipData.newUri(resolver, "screenshot", uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        configure()
     }
     return when (candidate) {
-        ProbeCandidate.TRANSLATE_SHARE -> send().setPackage(TRANSLATE_PACKAGE)
-        ProbeCandidate.LENS_ACTIVITY_MODE -> send()
-            .setClassName(GSA_PACKAGE, LENS_ACTIVITY)
-            .putExtra("lens_mode", "translate")
-        ProbeCandidate.LENS_ACTIVITY_STREAM -> send().setClassName(GSA_PACKAGE, LENS_ACTIVITY)
-        ProbeCandidate.LENS_ACTIVITY_VIEW -> Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "image/png")
-            setClassName(GSA_PACKAGE, LENS_ACTIVITY)
-            clipData = ClipData.newUri(resolver, "screenshot", uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        ProbeCandidate.IMPLICIT_TRANSLATE ->
+            gsaComponent("com.google.android.googlequicksearchbox.ImplicitTranslateSearchEntrypointInternal")
+        ProbeCandidate.LIVE_DEEPLINK_DIRECT ->
+            gsaComponent("com.google.android.apps.search.lens.live.deeplink.LiveActivity")
+        ProbeCandidate.LENS_URL_BASE -> view("googleapp://lens")
+        ProbeCandidate.LENS_URL_LIVE -> view("googleapp://lens/live")
+        ProbeCandidate.LENS_URL_TRANSLATE -> view("googleapp://lens/translate")
+        ProbeCandidate.LENS_SHARE_MODE -> sendTo(requireNotNull(uri)) {
+            setClassName(GSA_PACKAGE, "com.google.android.apps.search.lens.LensShareEntryPointActivity")
+            putExtra("lens_mode", "translate")
         }
-        ProbeCandidate.GOOGLE_APP_SHARE -> send().setPackage(GSA_PACKAGE)
+        ProbeCandidate.GOOGLE_APP_SHARE -> sendTo(requireNotNull(uri)) { setPackage(GSA_PACKAGE) }
     }
 }
 
@@ -197,4 +202,38 @@ fun componentDump(context: Context): String = buildString {
     }
     resolvers("ACTION_VIEW https://lens.google.com/", Intent(Intent.ACTION_VIEW, Uri.parse("https://lens.google.com/")))
     resolvers("ACTION_VIEW googleapp://lens", Intent(Intent.ACTION_VIEW, Uri.parse("googleapp://lens")))
+
+    // Deep-link / action resolution matrix: which URLs and actions the device answers,
+    // discovered WITHOUT launching anything.
+    appendLine("== resolution matrix (no launching, resolver queries only) ==")
+    val matrix = listOf(
+        "googleapp://lens" to "googleapp://lens",
+        "googleapp://lens/live" to "googleapp://lens/live",
+        "googleapp://lens/translate" to "googleapp://lens/translate",
+        "googleapp://lens?mode=translate" to "googleapp://lens?mode=translate",
+        "googleapp://lens?mode=live" to "googleapp://lens?mode=live",
+        "googleapp://translate" to "googleapp://translate",
+        "googleapp://lenslive" to "googleapp://lenslive",
+        "https://lens.google.com/translate" to "https://lens.google.com/translate",
+        "https://lens.google.com/live" to "https://lens.google.com/live",
+    )
+    for ((label, url) in matrix) {
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        val all = pm.queryIntentActivities(intent, 0)
+        appendLine(
+            "  VIEW $label -> all[${all.joinToString { "${it.activityInfo.packageName}/${it.activityInfo.name.substringAfterLast('.')}" }}] " +
+                "gsa[${pm.queryIntentActivities(Intent(intent).setPackage(GSA_PACKAGE), 0).joinToString { it.activityInfo.name.substringAfterLast('.') }}]"
+        )
+    }
+    for (action in listOf("android.intent.action.TRANSLATE", "android.intent.action.PROCESS_TEXT")) {
+        for (mime in listOf("text/plain", "image/png")) {
+            val intent = Intent(action).setType(mime)
+            val all = pm.queryIntentActivities(intent, 0)
+            appendLine(
+                "  $action [$mime] -> all[${all.joinToString { "${it.activityInfo.packageName}/${it.activityInfo.name.substringAfterLast('.')}" }}] " +
+                    "gsa[${pm.queryIntentActivities(Intent(intent).setPackage(GSA_PACKAGE), 0).joinToString { it.activityInfo.name.substringAfterLast('.') }}]"
+            )
+        }
+    }
+    appendLine()
 }
