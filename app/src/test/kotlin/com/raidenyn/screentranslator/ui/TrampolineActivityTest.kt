@@ -13,6 +13,7 @@ import com.raidenyn.screentranslator.lens.IntentStarter
 import com.raidenyn.screentranslator.lens.LensLauncher
 import com.raidenyn.screentranslator.service.ScreenCaptureService
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.TestScope
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -23,6 +24,7 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
+import org.robolectric.android.controller.ServiceController
 import org.robolectric.annotation.Config
 import org.robolectric.util.ReflectionHelpers
 
@@ -32,6 +34,7 @@ class TrampolineActivityTest {
 
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val testScope = TestScope()
+    private var serviceController: ServiceController<ScreenCaptureService>? = null
 
     /**
      * Holds every dispatched pipeline inside the delay step: a dispatch is observable
@@ -39,15 +42,22 @@ class TrampolineActivityTest {
      */
     private val gate = CompletableDeferred<Unit>()
 
-    @After fun resetService() { ScreenCaptureService.instance = null }
+    @After fun resetService() {
+        serviceController?.destroy()
+        testScope.cancel()
+    }
 
     /** The next activity [trampoline] started, or null when it started nothing. */
     private fun nextStartedBy(trampoline: TrampolineActivity): Intent? =
         shadowOf(trampoline).nextStartedActivityForResult?.intent
 
-    /** A service instance standing in for the system-bound one; no lifecycle is driven. */
-    private fun attachedService(): ScreenCaptureService =
-        Robolectric.buildService(ScreenCaptureService::class.java).get()
+    private fun attachedService(): ScreenCaptureService {
+        val controller = Robolectric.buildService(ScreenCaptureService::class.java).create()
+        serviceController = controller
+        return controller.get().also {
+            ReflectionHelpers.callInstanceMethod<Unit>(it, "onServiceConnected")
+        }
+    }
 
     /**
      * A real [CaptureOrchestrator] whose delay step records the dispatch and then parks
@@ -93,7 +103,6 @@ class TrampolineActivityTest {
     @Test
     fun servicePresentDispatches() {
         val service = attachedService()
-        ScreenCaptureService.instance = service
         val dispatches = mutableListOf<Long>()
         ReflectionHelpers.setField(service, "realOrchestrator", recordingOrchestrator(dispatches))
 
@@ -108,7 +117,6 @@ class TrampolineActivityTest {
     @Test
     fun inFlightTapDoesNothing() {
         val service = attachedService()
-        ScreenCaptureService.instance = service
         val dispatches = mutableListOf<Long>()
         val orchestrator = recordingOrchestrator(dispatches)
         ReflectionHelpers.setField(service, "realOrchestrator", orchestrator)

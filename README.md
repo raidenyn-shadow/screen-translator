@@ -27,16 +27,18 @@ APK: `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Setup
 
-1. Open the app and tap **Enable capture service**, then enable Screen Translator
-   in Android's Accessibility settings. After an update, turn the service off and
-   on if Android has not refreshed its capabilities.
-2. Add Screen Translator to **Smart Sidebar** in Settings → Smart Sidebar →
+1. Open the app with the service disabled. Use **Battery settings** to exempt it
+   from battery optimization. Pin/lock it in recents if ColorOS stops the service.
+2. Tap **Enable capture service**, then enable Screen Translator in Android's
+   Accessibility settings. After an update, turn the service off and on if Android
+   has not refreshed its capabilities. Returning to the app starts a capture.
+3. Add Screen Translator to **Smart Sidebar** in Settings → Smart Sidebar →
    customize.
-3. Use **Battery settings** in the setup screen to exempt the app from battery
-   optimization. Pin/lock it in recents if ColorOS stops the service.
 
-The setup screen appears when the accessibility service is off. With the service
-running, opening the app's icon performs the same capture action as a sidebar tap.
+The setup screen appears when the accessibility service is off or reconnecting.
+When the service becomes ready while setup is in the foreground, setup closes and
+the pending capture proceeds automatically. Opening the app's icon performs the
+same capture action as a sidebar tap once the service is ready.
 
 ## Usage
 

@@ -16,18 +16,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.DefaultLifecycleObserver
-import androidx.lifecycle.LifecycleOwner
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.raidenyn.screentranslator.R
 import com.raidenyn.screentranslator.service.ScreenCaptureService
 
@@ -39,20 +33,7 @@ import com.raidenyn.screentranslator.service.ScreenCaptureService
 @Composable
 fun SetupScreen() {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-
-    // Refreshed on every ON_RESUME: the user may toggle the service in system
-    // settings and come straight back here without recreating this screen.
-    var serviceOn by remember { mutableStateOf(ScreenCaptureService.instance != null) }
-    DisposableEffect(lifecycleOwner) {
-        val observer = object : DefaultLifecycleObserver {
-            override fun onResume(owner: LifecycleOwner) {
-                serviceOn = ScreenCaptureService.instance != null
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
+    val service by ScreenCaptureService.connection.collectAsState()
 
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
@@ -67,7 +48,7 @@ fun SetupScreen() {
                     text = stringResource(R.string.setup_title),
                     style = MaterialTheme.typography.headlineMedium
                 )
-                ServiceStatusChip(on = serviceOn)
+                ServiceStatusChip(on = service != null)
                 Button(
                     onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
                     modifier = Modifier.fillMaxWidth()

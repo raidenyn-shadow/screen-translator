@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityService.ScreenshotResult
 import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
@@ -25,6 +26,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -48,12 +52,26 @@ class ScreenCaptureService : AccessibilityService() {
     override fun onCreate() {
         super.onCreate()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        instance = this
+    }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        connectedService.value = this
+    }
+
+    override fun onUnbind(intent: Intent): Boolean {
+        if (instance === this) connectedService.value = null
+        translationSession?.cancel()
+        scope.coroutineContext.cancelChildren()
+        // A canceled capture may not have released its duplicate guard yet.
+        // Reconnection must get a fresh pipeline rather than dropping its first tap.
+        realOrchestrator = null
+        return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
+        if (instance === this) connectedService.value = null
         translationSession?.cancel()
-        instance = null
         realOrchestrator = null
         scope.cancel()
         super.onDestroy()
@@ -166,9 +184,10 @@ class ScreenCaptureService : AccessibilityService() {
     }
 
     companion object {
-        /** The currently bound service; null whenever it is disabled or being torn down. */
-        @Volatile
-        var instance: ScreenCaptureService? = null
+        private val connectedService = MutableStateFlow<ScreenCaptureService?>(null)
+        /** Emits only services that Android has connected and made ready for accessibility calls. */
+        val connection = connectedService.asStateFlow()
+        val instance: ScreenCaptureService? get() = connectedService.value
 
         /** Posts a capture to the running service; false if there is none or one is already in flight. */
         fun requestCapture(): Boolean = instance?.orchestrator()?.tryDispatch() ?: false
