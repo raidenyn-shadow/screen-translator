@@ -14,4 +14,13 @@
     <string name="setup_run_test_capture">Run test capture</string>
     <string name="setup_how_to_title">How to use it</string>
     <string name="setup_how_to">1. Add the app to Smart Sidebar (Settings → Smart Sidebar → customize).\n2. Pin/lock the app in recents so ColorOS keeps it running.\n3. Enable the capture service once. A sidebar tap then captures the screen and opens Google Lens.</string>
+    <string name="setup_open_probe">Lens translate probe (diagnostics)</string>
+
+    <!-- SPIKE: Lens translate probe screen -->
+    <string name="probe_title">Lens translate probe</string>
+    <string name="probe_instructions">Each button captures this screen (it contains sample foreign text below) and opens one candidate app. Watch whether the translation appears WITHOUT any extra tap. The service must be on.</string>
+    <string name="probe_try_section">1. Try candidates</string>
+    <string name="probe_dump_section">2. Component dump</string>
+    <string name="probe_dump_copy">Dump and copy to clipboard</string>
+    <string name="probe_dump_share">Share dump</string>
 </resources>

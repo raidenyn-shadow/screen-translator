@@ -1,6 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- SPIKE: package visibility for the Lens translate probe (see probe/LensProbe.kt) -->
+    <queries>
+        <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.google.ar.lens" />
+        <package android:name="com.google.android.apps.translate" />
+        <intent>
+            <action android:name="android.intent.action.SEND" />
+            <data android:mimeType="image/png" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" android:host="lens.google.com" />
+        </intent>
+    </queries>
+
     <application
         android:name=".App"
         android:label="Screen Translator"
@@ -21,6 +36,12 @@
 
         <activity
             android:name=".ui.SetupActivity"
+            android:exported="false"
+            android:theme="@style/Theme.ScreenTranslator.Setup" />
+
+        <!-- SPIKE: diagnostics screen for finding an auto-translate hand-off -->
+        <activity
+            android:name=".ui.ProbeActivity"
             android:exported="false"
             android:theme="@style/Theme.ScreenTranslator.Setup" />
 

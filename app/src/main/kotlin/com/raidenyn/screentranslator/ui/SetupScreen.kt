@@ -89,6 +89,13 @@ fun SetupScreen() {
                 ) {
                     Text(stringResource(R.string.setup_run_test_capture))
                 }
+                // SPIKE: entry into the throwaway Lens translate probe
+                OutlinedButton(
+                    onClick = { context.startActivity(Intent(context, ProbeActivity::class.java)) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(stringResource(R.string.setup_open_probe))
+                }
                 Text(
                     text = stringResource(R.string.setup_how_to_title),
                     style = MaterialTheme.typography.titleMedium
