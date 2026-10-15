@@ -45,27 +45,20 @@ const val LENS_STANDALONE_PACKAGE = "com.google.ar.lens"
 const val TRANSLATE_PACKAGE = "com.google.android.apps.translate"
 const val LENS_ACTIVITY = "com.google.android.apps.gsa.staticplugins.lens.LensActivity"
 
+const val LENS_SHARE_ENTRY = "com.google.android.apps.search.lens.LensShareEntryPointActivity"
+
 enum class ProbeCandidate(val label: String, val needsCapture: Boolean) {
-    IMPLICIT_TRANSLATE("D1: ImplicitTranslateSearchEntrypoint (direct)", false),
-    LIVE_DEEPLINK_DIRECT("D2: Lens Live deeplink activity (direct)", false),
-    URL_MODE_TRANSLATE("E1: googleapp://lens?mode=translate", false),
-    URL_MODE_LIVE("E2: googleapp://lens?mode=live", false),
-    URL_LENS_MODE("E3: googleapp://lens?lens_mode=translate", false),
-    URL_FEATURE("E4: googleapp://lens?feature=translate", false),
-    URL_ENTRY("E5: googleapp://lens?entry=translate", false),
-    SHARE_EXTRA_MODE("F1: LensShareEntryPoint + screenshot + extra mode=translate", true),
-    SHARE_EXTRA_ENTRY_POINT("F2: + extra entry_point=translate", true),
-    SHARE_EXTRA_LENS_ENTRY("F3: + extra lens_entry_point=translate", true),
-    SHARE_EXTRA_SOURCE("F4: + extra launch_source=translate", true),
-    GOOGLE_APP_SHARE("C: Google app image share (reference)", true),
+    G1_FULLSCREEN("G1: share entry + mode=translate + fullscreen=true", true),
+    G2_EXPANDED("G2: + mode=translate + expanded=true", true),
+    G3_IMMERSIVE("G3: + mode=translate + immersive=true", true),
+    G4_FULL_SCREEN("G4: + mode=translate + full_screen=true", true),
+    G5_FOCUS("G5: + mode=translate + focus=translate", true),
+    G6_NONSENSE("G6: control - nonsense extra zzz_auto=translate", true),
+    G7_NO_EXTRA("G7: control - share entry, NO extras (compare smallness)", true),
 }
 
 /** Builds the intent for one probe candidate; [uri] is only required for capture candidates. */
 fun probeIntent(candidate: ProbeCandidate, uri: Uri?, resolver: ContentResolver): Intent {
-    fun gsaComponent(cls: String) =
-        Intent().setClassName(GSA_PACKAGE, cls).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-    fun view(url: String) =
-        Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     fun sendTo(uri: Uri, configure: Intent.() -> Unit = {}) = Intent(Intent.ACTION_SEND).apply {
         type = "image/png"
         putExtra(Intent.EXTRA_STREAM, uri)
@@ -73,25 +66,18 @@ fun probeIntent(candidate: ProbeCandidate, uri: Uri?, resolver: ContentResolver)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
         configure()
     }
-    fun shareEntry(uri: Uri?, extra: Pair<String, String>) = sendTo(requireNotNull(uri)) {
-        setClassName(GSA_PACKAGE, "com.google.android.apps.search.lens.LensShareEntryPointActivity")
-        putExtra(extra.first, extra.second)
+    fun shareEntry(uri: Uri?, vararg extras: Pair<String, String>) = sendTo(requireNotNull(uri)) {
+        setClassName(GSA_PACKAGE, LENS_SHARE_ENTRY)
+        extras.forEach { putExtra(it.first, it.second) }
     }
     return when (candidate) {
-        ProbeCandidate.IMPLICIT_TRANSLATE ->
-            gsaComponent("com.google.android.googlequicksearchbox.ImplicitTranslateSearchEntrypointInternal")
-        ProbeCandidate.LIVE_DEEPLINK_DIRECT ->
-            gsaComponent("com.google.android.apps.search.lens.live.deeplink.LiveActivity")
-        ProbeCandidate.URL_MODE_TRANSLATE -> view("googleapp://lens?mode=translate")
-        ProbeCandidate.URL_MODE_LIVE -> view("googleapp://lens?mode=live")
-        ProbeCandidate.URL_LENS_MODE -> view("googleapp://lens?lens_mode=translate")
-        ProbeCandidate.URL_FEATURE -> view("googleapp://lens?feature=translate")
-        ProbeCandidate.URL_ENTRY -> view("googleapp://lens?entry=translate")
-        ProbeCandidate.SHARE_EXTRA_MODE -> shareEntry(uri, "mode" to "translate")
-        ProbeCandidate.SHARE_EXTRA_ENTRY_POINT -> shareEntry(uri, "entry_point" to "translate")
-        ProbeCandidate.SHARE_EXTRA_LENS_ENTRY -> shareEntry(uri, "lens_entry_point" to "translate")
-        ProbeCandidate.SHARE_EXTRA_SOURCE -> shareEntry(uri, "launch_source" to "translate")
-        ProbeCandidate.GOOGLE_APP_SHARE -> sendTo(requireNotNull(uri)) { setPackage(GSA_PACKAGE) }
+        ProbeCandidate.G1_FULLSCREEN -> shareEntry(uri, "mode" to "translate", "fullscreen" to "true")
+        ProbeCandidate.G2_EXPANDED -> shareEntry(uri, "mode" to "translate", "expanded" to "true")
+        ProbeCandidate.G3_IMMERSIVE -> shareEntry(uri, "mode" to "translate", "immersive" to "true")
+        ProbeCandidate.G4_FULL_SCREEN -> shareEntry(uri, "mode" to "translate", "full_screen" to "true")
+        ProbeCandidate.G5_FOCUS -> shareEntry(uri, "mode" to "translate", "focus" to "translate")
+        ProbeCandidate.G6_NONSENSE -> shareEntry(uri, "zzz_auto" to "translate")
+        ProbeCandidate.G7_NO_EXTRA -> shareEntry(uri)
     }
 }
 
