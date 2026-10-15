@@ -16,8 +16,10 @@ import com.raidenyn.screentranslator.capture.CaptureStore
 import com.raidenyn.screentranslator.capture.ScreenshotTaker
 import com.raidenyn.screentranslator.service.ScreenCaptureService
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -35,8 +37,8 @@ import kotlin.coroutines.resumeWithException
  * one candidate intent at a time, and (b) dumps the relevant Lens/Google/Translate
  * components so the candidate list can be refined from real device data.
  *
- * The screenshot-taker logic duplicates ScreenCaptureService's private implementation
- * deliberately: no production file should change for this probe.
+ * The screenshot-taker logic duplicates ScreenCaptureService's private implementation.
+ * J1 additionally arms a one-shot UI interaction in that service, only for this probe.
  */
 
 const val PROBE_CAPTURE_DELAY_MS = 400L
@@ -49,6 +51,7 @@ const val LENS_SHARE_ENTRY = "com.google.android.apps.search.lens.LensShareEntry
 const val LENS_EXPORTED = "com.google.android.apps.search.lens.LensExportedActivity"
 
 enum class ProbeCandidate(val label: String, val needsCapture: Boolean) {
+    SHARE_AUTO_TRANSLATE("J1: screenshot → Lens → automatically select Translate once", true),
     TRANSLATE_CAMERA("I1: translation-only Lens via Google Translate (camera, no screenshot)", false),
     GOOGLE_LENS_URL("H1: google://lens (allowlist gate test)", false),
     LENS_EXPORTED_FOR_RESULT("H2: LensExportedActivity for-result (allowlist gate test)", false),
@@ -95,6 +98,7 @@ fun probeIntent(candidate: ProbeCandidate, uri: Uri?, resolver: ContentResolver)
         ProbeCandidate.SHARE_TEXT_EXTRA -> shareEntry(uri) { putExtra(Intent.EXTRA_TEXT, "translate") }
         ProbeCandidate.MEDIASTORE_SHARE -> shareEntry(uri)
         ProbeCandidate.SHARE_NO_EXTRA -> shareEntry(uri)
+        ProbeCandidate.SHARE_AUTO_TRANSLATE -> shareEntry(uri)
     }
 }
 
@@ -104,6 +108,9 @@ class LensProbe(private val service: ScreenCaptureService) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val main = Handler(Looper.getMainLooper())
     private val inFlight = AtomicBoolean(false)
+
+    /** A diagnostic capture belongs to its screen; leaving it must not launch Lens later. */
+    fun cancel() { scope.cancel() }
 
     fun requestCapture(onCaptured: (Uri) -> Unit, onError: (String) -> Unit) {
         if (!inFlight.compareAndSet(false, true)) {
@@ -115,9 +122,11 @@ class LensProbe(private val service: ScreenCaptureService) {
                 delay(PROBE_CAPTURE_DELAY_MS)
                 val bitmap = ProbeTaker(service).take()
                 val uri = CaptureStore.from(service).save(bitmap)
-                main.post { onCaptured(uri) }
+                main.post { if (scope.isActive) onCaptured(uri) }
+            } catch (canceled: CancellationException) {
+                throw canceled
             } catch (t: Throwable) {
-                main.post { onError(t.message ?: t.javaClass.simpleName) }
+                main.post { if (scope.isActive) onError(t.message ?: t.javaClass.simpleName) }
             } finally {
                 inFlight.set(false)
             }
@@ -174,6 +183,9 @@ fun componentDump(context: Context): String = buildString {
     val pm = context.packageManager
     appendLine("Screen Translator — Lens probe dump")
     appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+    appendLine()
+    appendLine("== last one-shot translation automation ==")
+    appendLine(LensTranslateProbeStatus.read(context))
     appendLine()
 
     fun dumpPackage(pkg: String, activityFilter: (String) -> Boolean = { true }) {

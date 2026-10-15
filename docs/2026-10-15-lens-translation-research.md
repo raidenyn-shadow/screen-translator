@@ -16,9 +16,30 @@ Lens as the actual calling app. This avoids depending on Lens interpreting
 invented extras such as `mode=translate` on an image-share intent.
 
 **Verification level:** confirmed in the manifest and code of a current,
-signature-verified Google Translate APK. Not run on the OnePlus: `adb devices -l`
-returned no devices, and the user chose research without a device. This is a
-source-backed launch route, not a claim of successful on-device testing.
+signature-verified Google Translate APK, then confirmed by the user on the target
+phone using I1 in release `v0.3.5-probe`: “Opens the camera with translation already
+selected.” The agent has no ADB connection; this runtime evidence is the user's
+manual test, not an agent-operated device test.
+
+### Confirmed device configuration
+
+| Item | Reported value |
+| --- | --- |
+| Phone | OnePlus PYB110 |
+| Android | 17, API 37 |
+| Google app | `17.64.15.ve.arm64` (`301817218`) |
+| Google Translate | `10.38.67.991942559.4-release` (`701034682`) |
+| Standalone Lens | `1.18.250731009` (`250731009`) |
+
+The user also reported that H2 returned to our app, H4 did nothing, and the other
+H routes opened Lens but needed another tap to select translation. No H2 numeric
+result code was supplied, so caller eligibility remains undetermined. The package
+dump was partial; the configuration above was present in the supplied portion.
+The user subsequently confirmed that selecting a screenshot from the gallery
+inside I1 immediately translates it and produces exactly the desired view.
+This validates the manual translation-camera → gallery → screenshot path on this
+configuration. Automatic screenshot handoff and repeated/cold launches remain
+unverified.
 
 **Important scope:** this opens the translation **camera**, not a supplied
 screenshot. It answers how to open Lens focused on translation. It does not yet
@@ -186,11 +207,37 @@ framework calling identity.
    followed by selecting Translate, or importing the image through Translate's
    translation-only camera. Those still require interaction.
 
-If fully automatic screenshot translation is essential, another engineering path
-is sharing the screenshot and then selecting the visible Translate control via
-accessibility. That would require changing this app's screenshot-only
-accessibility design to read/interact with Lens UI, plus version/device-specific
-validation. It is a separate behavior change, not a newly discovered intent.
+### Approved follow-up: one-shot accessibility prototype
+
+After confirming the manual import result, the user approved sharing the
+screenshot and automatically selecting the visible Translate control via
+accessibility. The J1 diagnostic implements this experiment, extending the prior
+screenshot-only service with UI-retrieval capability. It is not a newly discovered
+image-to-translation intent, and runtime success on the phone is still pending.
+
+J1 arms inspection only after its screenshot has been saved and immediately before
+launching the known image-share component. It polls the active window every 200 ms
+for at most 10 seconds. Only the Google app's controls are searched. Matching
+requires an exact English Translate caption or accessibility description and a
+button role or tab/chip/filter resource ID. Hidden, disabled, partial-label, plain
+OCR TextView, and ambiguous matches are not clicked. An already-selected Translate
+control stops the attempt without toggling it.
+
+The attempt disarms before its single ACTION_CLICK, even if the action is rejected
+or throws. It also stops when leaving the Google app after observing it, on
+service interruption/destruction, or timeout. Passive accessibility events do not
+start attempts. The ordinary sidebar capture pipeline does not arm J1.
+
+The service capability change requires re-enabling the service after updating the
+APK. Setup and the system accessibility description now disclose UI interaction.
+The report persists across activity recreation and is included in the component
+dump. It includes outcome and up to 16 visible clickable control summaries (class,
+resource ID, bounded caption, selected state), not a full UI-tree dump.
+
+The device acceptance check is the visible translated screenshot. An accepted
+accessibility click alone is not proof of translation completion. If J1 times out,
+the report distinguishes inaccessible UI/no controls from available but unmatched
+or ambiguous controls; the next change should be based on that evidence.
 
 Do not promote the camera route into `LensLauncher.launch(uri)`: it would ignore
 the supplied screenshot while appearing to satisfy the capture pipeline.

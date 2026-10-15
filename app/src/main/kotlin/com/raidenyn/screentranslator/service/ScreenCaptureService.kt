@@ -3,7 +3,9 @@ package com.raidenyn.screentranslator.service
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityService.ScreenshotResult
 import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -18,6 +20,10 @@ import com.raidenyn.screentranslator.capture.ScreenshotTaker
 import com.raidenyn.screentranslator.capture.ScreenshotUnsupportedException
 import com.raidenyn.screentranslator.lens.IntentStarter
 import com.raidenyn.screentranslator.lens.LensLauncher
+import com.raidenyn.screentranslator.probe.LensTranslateProbeSession
+import com.raidenyn.screentranslator.probe.LensTranslateProbeStatus
+import com.raidenyn.screentranslator.probe.ProbeCandidate
+import com.raidenyn.screentranslator.probe.probeIntent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -28,15 +34,15 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * Screenshot-only accessibility service. The system binds it once the user enables it,
- * and later tasks post captures through [requestCapture]. The service never reads
- * window content (`canRetrieveWindowContent="false"`); the only accessibility capability
- * it uses is [AccessibilityService.takeScreenshot].
+ * Captures screenshots for the sidebar pipeline. The explicit J1 diagnostic also
+ * reads Google Lens controls and performs at most one Translate click. Window
+ * inspection is active only during that bounded, explicitly requested diagnostic.
  */
 class ScreenCaptureService : AccessibilityService() {
 
     private lateinit var scope: CoroutineScope
     private var realOrchestrator: CaptureOrchestrator? = null
+    private var translateProbe: LensTranslateProbeSession? = null
 
     /** Test seam: when set, [orchestrator] returns this instead of the real pipeline. */
     internal var orchestratorOverride: CaptureOrchestrator? = null
@@ -48,20 +54,41 @@ class ScreenCaptureService : AccessibilityService() {
     override fun onCreate() {
         super.onCreate()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        LensTranslateProbeStatus.load(this)
         instance = this
     }
 
     override fun onDestroy() {
+        cancelTranslateProbe("Capture service stopped.")
         instance = null
         realOrchestrator = null
         scope.cancel()
         super.onDestroy()
     }
 
-    /** Required override, deliberately empty: this service never inspects events. */
+    /** J1 polls only while armed; passive events themselves never trigger inspection or clicks. */
     override fun onAccessibilityEvent(event: AccessibilityEvent) {}
 
-    override fun onInterrupt() {}
+    override fun onInterrupt() { cancelTranslateProbe("Accessibility service interrupted.") }
+
+    /** Called on the main thread after the diagnostic screenshot has been saved. */
+    fun launchTranslateProbe(uri: Uri): Boolean {
+        if ((serviceInfo?.capabilities ?: 0) and
+            AccessibilityServiceInfo.CAPABILITY_CAN_RETRIEVE_WINDOW_CONTENT == 0) {
+            LensTranslateProbeStatus.publish(this,
+                "J1 cannot inspect UI. Turn Screen Translator off and on in Accessibility settings after updating.")
+            return false
+        }
+        val session = translateProbe ?: LensTranslateProbeSession(
+            readWindow = { rootInActiveWindow },
+            onReport = { LensTranslateProbeStatus.publish(this, it) },
+        ).also { translateProbe = it }
+        return session.start {
+            startActivity(probeIntent(ProbeCandidate.SHARE_AUTO_TRANSLATE, uri, contentResolver))
+        }
+    }
+
+    fun cancelTranslateProbe(reason: String) { translateProbe?.cancel(reason) }
 
     private fun buildOrchestrator(): CaptureOrchestrator {
         val main = Handler(Looper.getMainLooper())

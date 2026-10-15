@@ -105,6 +105,10 @@ fun SetupScreen() {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Text(
+                    text = stringResource(R.string.service_accessibility_description),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
             }
         }
     }

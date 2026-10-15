@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,6 +27,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -33,6 +35,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.raidenyn.screentranslator.R
 import com.raidenyn.screentranslator.probe.LensProbe
+import com.raidenyn.screentranslator.probe.LensTranslateProbeStatus
 import com.raidenyn.screentranslator.probe.ProbeCandidate
 import com.raidenyn.screentranslator.probe.componentDump
 import com.raidenyn.screentranslator.probe.probeIntent
@@ -46,6 +49,8 @@ import com.raidenyn.screentranslator.service.ScreenCaptureService
 class ProbeActivity : ComponentActivity() {
 
     private var status by mutableStateOf<String?>(null)
+    private var capturePending by mutableStateOf(false)
+    private var captureProbe: LensProbe? = null
 
     /** H2 launches LensExportedActivity FOR RESULT so it sees a non-null calling package. */
     private val lensForResult =
@@ -57,7 +62,9 @@ class ProbeActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        LensTranslateProbeStatus.load(this)
         setContent {
+            val automationReport by LensTranslateProbeStatus.updates.collectAsState()
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Column(
@@ -76,6 +83,15 @@ class ProbeActivity : ComponentActivity() {
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        OutlinedButton(
+                            onClick = { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text(stringResource(R.string.probe_accessibility_settings)) }
+                        Card {
+                            // Keep control inventory in the shareable dump so a large
+                            // report cannot push the foreign sample text off-screen.
+                            Text(automationReport.lineSequence().first(), modifier = Modifier.padding(12.dp))
+                        }
                         Card {
                             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Text("この文章はスクリーン翻訳のテスト用です。翻訳が自動的に表示されるか確認します。")
@@ -89,6 +105,7 @@ class ProbeActivity : ComponentActivity() {
                         ProbeCandidate.entries.forEach { candidate ->
                             OutlinedButton(
                                 onClick = { tryCandidate(candidate) },
+                                enabled = !capturePending,
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text(candidate.label)
@@ -117,7 +134,23 @@ class ProbeActivity : ComponentActivity() {
         }
     }
 
+    override fun onStop() {
+        // The capture is canceled on navigation/recreation. Once Lens has been
+        // launched, captureProbe is already null and the service owns J1's lifetime.
+        captureProbe?.let {
+            it.cancel()
+            captureProbe = null
+            capturePending = false
+            status = "Diagnostic capture canceled because its screen was left."
+        }
+        super.onStop()
+    }
+
     private fun tryCandidate(candidate: ProbeCandidate) {
+        if (capturePending) return
+        if (candidate != ProbeCandidate.SHARE_AUTO_TRANSLATE) {
+            ScreenCaptureService.instance?.cancelTranslateProbe("Another diagnostic was selected.")
+        }
         if (candidate == ProbeCandidate.LENS_EXPORTED_FOR_RESULT) {
             status = "Launching LensExportedActivity for result… watch the result code below."
             try {
@@ -147,8 +180,20 @@ class ProbeActivity : ComponentActivity() {
             return
         }
         status = "Capturing screen…"
-        LensProbe(service).requestCapture(
+        capturePending = true
+        val probe = LensProbe(service).also { captureProbe = it }
+        probe.requestCapture(
             onCaptured = { uri ->
+                captureProbe = null
+                capturePending = false
+                if (candidate == ProbeCandidate.SHARE_AUTO_TRANSLATE) {
+                    status = if (service.launchTranslateProbe(uri)) {
+                        "J1 started. Wait for Translate without tapping it; return here for the report above."
+                    } else {
+                        "J1 did not start. Check the automation report above (or wait for the current attempt)."
+                    }
+                    return@requestCapture
+                }
                 val shareUri = if (candidate == ProbeCandidate.MEDIASTORE_SHARE) {
                     toGalleryUri(uri)
                 } else {
@@ -169,7 +214,11 @@ class ProbeActivity : ComponentActivity() {
                     status = "Launch failed for ${candidate.label}: ${t.message}"
                 }
             },
-            onError = { status = "Capture failed: $it" }
+            onError = {
+                captureProbe = null
+                capturePending = false
+                status = "Capture failed: $it"
+            }
         )
     }
 

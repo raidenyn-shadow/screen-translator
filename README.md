@@ -11,8 +11,9 @@ How it works, in order:
 1. `TrampolineActivity` (the app's launcher entry point) receives the sidebar tap.
 2. If the capture service is not running, it opens the setup screen instead — never fails
    silently.
-3. `ScreenCaptureService` (accessibility service, screenshot-only: it never reads window
-   content) waits `CAPTURE_DELAY_MS` (400 ms) and takes the screenshot.
+3. `ScreenCaptureService` waits `CAPTURE_DELAY_MS` (400 ms) and takes the screenshot.
+   The explicit J1 diagnostic additionally inspects Lens controls and attempts one
+   Translate click; the regular sidebar capture does not arm this automation.
 4. The image is saved to the app's private cache and purged on the next app start.
 5. `LensLauncher` fires a three-step fallback chain: known Lens components →
    package-restricted `ACTION_SEND` → system share sheet, so the user always ends up with
@@ -36,7 +37,8 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 1. **Enable the capture service.** Open the app once and tap *Enable capture service*,
    or go directly to system Settings → Accessibility → Screen Translator and turn it on.
-   The accessibility service only takes screenshots; it never reads screen content.
+   The service takes screenshots. The explicit J1 diagnostic also reads Lens UI
+   controls for up to 10 seconds and activates Translate at most once.
 2. **Add the app to Smart Sidebar.** Settings → Smart Sidebar → customize, then drag
    Screen Translator into the sidebar.
 3. **Battery settings.** Tap *Battery settings* on the setup screen (it opens the system
@@ -62,7 +64,37 @@ also now preserves the Activity Result request by omitting `NEW_TASK`.
 
 See [the research findings](docs/2026-10-15-lens-translation-research.md) for APK
 evidence, launch commands, screenshot limitations, and device acceptance checks.
-The new route has not yet been verified on the OnePlus.
+The user confirmed I1 opens the camera with translation already selected on a
+OnePlus PYB110 running Android 17, Google app 17.64.15, and Translate 10.38.67.
+The user also confirmed that importing a screenshot through I1 immediately
+translates it into the desired view. Automatic screenshot handoff remains unresolved.
+
+### J1 — one-shot translation automation prototype
+
+The new **J1** diagnostic shares a captured screenshot with Lens, then waits up to
+10 seconds for its visible, enabled **Translate** button/filter (English caption).
+It uses accessibility node actions, not coordinate taps. A button role or
+tab/chip/filter resource ID is required in addition to the exact caption, so a
+plain clickable OCR text node is not treated as a Translate control.
+
+1. After installing this build, open setup with the capture service disabled and
+   tap **Lens translate probe (diagnostics)**.
+2. Use the diagnostic's **Accessibility settings** button to turn Screen Translator
+   **off and on once**, then press Back to return. This refreshes the new
+   UI-inspection capability. If the service was already off, enabling it suffices.
+3. Tap **J1** while the foreign sample text above it is visible. Do not touch Lens
+   during the attempt; observe whether it switches to translation automatically.
+4. Return to the diagnostic screen. The J1 summary is near the top. Copy/share the
+   dump for the full report, including up to 16 exposed controls and their IDs.
+
+The attempt stops after a click is accepted or rejected, when Translate is already
+selected, when you leave the Google app after it appears, on interruption, or at
+timeout. **CLICK_ACCEPTED means Android accepted the action, not that translation
+finished**; the visible image is the acceptance check. Ambiguous controls are not
+clicked. A rejected click is not retried.
+
+This prototype is not yet verified on the phone. It exercises the image-share flow
+plus an automatic Translate selection; it does not automate I1's gallery picker.
 
 ## Probe checklist (run on the OnePlus 16, update code from results)
 
