@@ -1,9 +1,13 @@
 package com.raidenyn.screentranslator.capture
 
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -18,13 +22,18 @@ import java.util.concurrent.Executor
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
+@OptIn(ExperimentalCoroutinesApi::class)
 class ProjectionFrameSourceTest {
 
     private val environment = FakeEnvironment()
     private var stopSignals = 0
 
-    private fun newSource(timeoutMs: Long = 2_000): ProjectionFrameSource =
-        ProjectionFrameSource(environment, timeoutMs = timeoutMs) { stopSignals++ }
+    private fun newSource(
+        timeoutMs: Long = 2_000,
+        environment: FakeEnvironment = this.environment,
+        bitmapConverter: ((ByteBuffer, Int, Int, Int, Int) -> android.graphics.Bitmap)? = null,
+    ): ProjectionFrameSource =
+        ProjectionFrameSource(environment, timeoutMs = timeoutMs, onStopped = { stopSignals++ }, bitmapConverter = bitmapConverter ?: ::rgbaToBitmap)
 
     /** 2x2 RGBA frame with 12-byte rows in one flat color; [reads] and [closes] witness its lifecycle. */
     private class FakeFrame(private val argb: Int) : FrameImage {
@@ -104,8 +113,7 @@ class ProjectionFrameSourceTest {
      * assertions depend on ordering alone. [geometryOnRegister] fires a geometry event during
      * registration, before the source can create a reader or display.
      */
-    private class FakeEnvironment : ProjectionEnvironment {
-        override val executor: Executor = Executor { it.run() }
+    private class FakeEnvironment(override val executor: Executor = Executor { it.run() }) : ProjectionEnvironment {
         val events = mutableListOf<String>()
         val readers = mutableListOf<FakeReader>()
         var screen: FakeScreen? = null; private set
@@ -114,10 +122,13 @@ class ProjectionFrameSourceTest {
         var releases = 0; private set
         var geometryOnRegister: Pair<Int, Int>? = null
         var failReaderRegistration = false
+        var failReaderCreation = false
+        var failDisplayAttachment = false
 
         override fun geometry() = ScreenGeometry(4, 4, 160)
 
         override fun createReader(width: Int, height: Int, maxImages: Int): FrameReader {
+            if (failReaderCreation) throw IllegalStateException("reader creation failed")
             this.maxImages = maxImages
             events.add("reader $width x $height")
             return FakeReader().also {
@@ -128,6 +139,7 @@ class ProjectionFrameSourceTest {
 
         override fun attachDisplay(reader: FrameReader, geometry: ScreenGeometry): VirtualScreen {
             events.add("attach")
+            if (failDisplayAttachment) throw IllegalStateException("display attachment failed")
             return FakeScreen().also { screen = it }
         }
 
@@ -141,6 +153,17 @@ class ProjectionFrameSourceTest {
             releases++
             events.add("release")
         }
+    }
+
+    private class QueuedExecutor : Executor {
+        private val tasks = ArrayDeque<Runnable>()
+
+        override fun execute(command: Runnable) {
+            tasks.addLast(command)
+        }
+
+        fun runNext() = tasks.removeFirst().run()
+        fun runAll() { while (tasks.isNotEmpty()) runNext() }
     }
 
     @Test
@@ -336,6 +359,53 @@ class ProjectionFrameSourceTest {
     }
 
     @Test
+    fun awaitReadyCompletesOnlyAfterQueuedReaderAndDisplayAttachment() = runBlocking {
+        val executor = QueuedExecutor()
+        val queuedEnvironment = FakeEnvironment(executor)
+        val source = newSource(environment = queuedEnvironment)
+        val ready = async(start = CoroutineStart.UNDISPATCHED) { source.awaitReady() }
+
+        assertTrue(!ready.isCompleted)
+        assertEquals(listOf("register"), queuedEnvironment.events)
+
+        executor.runNext()
+
+        ready.await()
+        assertEquals(listOf("register", "reader 4 x 4", "attach"), queuedEnvironment.events)
+        source.close()
+        executor.runAll()
+    }
+
+    @Test
+    fun queuedReaderStartupFailureCompletesReadinessExceptionallyAndReleasesEnvironment() = runBlocking {
+        val executor = QueuedExecutor()
+        val queuedEnvironment = FakeEnvironment(executor).apply { failReaderCreation = true }
+        val source = newSource(environment = queuedEnvironment)
+        val ready = async(start = CoroutineStart.UNDISPATCHED) { runCatching { source.awaitReady() }.exceptionOrNull() }
+
+        executor.runNext()
+
+        assertEquals("reader creation failed", ready.await()?.message)
+        assertEquals(1, queuedEnvironment.releases)
+        assertNull(queuedEnvironment.screen)
+    }
+
+    @Test
+    fun queuedDisplayStartupFailureClosesReaderAndReleasesEnvironment() = runBlocking {
+        val executor = QueuedExecutor()
+        val queuedEnvironment = FakeEnvironment(executor).apply { failDisplayAttachment = true }
+        val source = newSource(environment = queuedEnvironment)
+        val ready = async(start = CoroutineStart.UNDISPATCHED) { runCatching { source.awaitReady() }.exceptionOrNull() }
+
+        executor.runNext()
+
+        assertEquals("display attachment failed", ready.await()?.message)
+        assertEquals(1, queuedEnvironment.readers.single().closes)
+        assertEquals(1, queuedEnvironment.releases)
+        assertNull(queuedEnvironment.screen)
+    }
+
+    @Test
     fun staleReaderCallbackAfterCloseOnlyClosesImage() {
         val source = newSource()
         val reader = environment.readers.single()
@@ -411,5 +481,40 @@ class ProjectionFrameSourceTest {
         assertEquals(0xFF999999.toInt(), bitmap.getPixel(0, 0))
         assertEquals(1, fresh.reads)
         source.close()
+    }
+
+    @Test
+    fun cancellationWinningDuringCompletionRecyclesBitmapAndLeavesNextRequestUsable() = runTest {
+        val executor = QueuedExecutor()
+        val queuedEnvironment = FakeEnvironment(executor)
+        var converted: android.graphics.Bitmap? = null
+        val source = newSource(environment = queuedEnvironment) { _, _, _, _, _ ->
+            android.graphics.Bitmap.createBitmap(2, 2, android.graphics.Bitmap.Config.ARGB_8888).also {
+                it.setPixel(0, 0, 0xFFBBBBBB.toInt())
+                converted = it
+            }
+        }
+        executor.runNext()
+        source.awaitReady()
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        val taken = async(dispatcher) { source.take() }
+        runCurrent()
+        executor.runNext()
+
+        queuedEnvironment.readers.single().deliver(FakeFrame(0xFFAAAAAA.toInt()))
+        executor.runNext()
+        taken.cancel()
+        runCurrent()
+        executor.runAll()
+
+        assertTrue(converted!!.isRecycled)
+
+        val next = async(start = CoroutineStart.UNDISPATCHED) { source.take() }
+        executor.runNext()
+        queuedEnvironment.readers.single().deliver(FakeFrame(0xFFBBBBBB.toInt()))
+        executor.runNext()
+        assertEquals(0xFFBBBBBB.toInt(), next.await().getPixel(0, 0))
+        source.close()
+        executor.runAll()
     }
 }

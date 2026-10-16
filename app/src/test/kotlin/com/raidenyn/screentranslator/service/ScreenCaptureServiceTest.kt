@@ -21,6 +21,8 @@ import com.raidenyn.screentranslator.capture.ProjectionFrameSource
 import com.raidenyn.screentranslator.capture.ScreenGeometry
 import com.raidenyn.screentranslator.capture.VirtualScreen
 import com.raidenyn.screentranslator.ui.TrampolineActivity
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestScope
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -39,6 +41,7 @@ import java.util.concurrent.Executor
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
+@OptIn(ExperimentalCoroutinesApi::class)
 class ScreenCaptureServiceTest {
 
     private val context = ApplicationProvider.getApplicationContext<Context>()
@@ -56,26 +59,30 @@ class ScreenCaptureServiceTest {
      * events prove the projection callback registered before the display was created, and an
      * empty event list on a failed start proves no reader or display leaked.
      */
-    private class RecordingEnvironment : ProjectionEnvironment {
+    private class RecordingEnvironment(override val executor: Executor = Executor { it.run() }) : ProjectionEnvironment {
         val events = mutableListOf<String>()
         var released = 0
             private set
 
-        override val executor: Executor = Executor { it.run() }
+        var failReaderCreation = false
+        var failDisplayAttachment = false
+        var readerCloses = 0
 
         override fun geometry() = ScreenGeometry(2, 2, 160)
 
         override fun createReader(width: Int, height: Int, maxImages: Int): FrameReader {
+            if (failReaderCreation) throw IllegalStateException("reader creation failed")
             events += "reader"
             return object : FrameReader {
                 override fun onImageAvailable(onFrame: () -> Unit) {}
                 override fun acquireLatestImage(): FrameImage? = null
-                override fun close() {}
+                override fun close() { readerCloses++ }
             }
         }
 
         override fun attachDisplay(reader: FrameReader, geometry: ScreenGeometry): VirtualScreen {
             events += "display"
+            if (failDisplayAttachment) throw IllegalStateException("display attachment failed")
             return object : VirtualScreen {
                 override fun clearSurface() {}
                 override fun resize(width: Int, height: Int, densityDpi: Int) {}
@@ -91,6 +98,16 @@ class ScreenCaptureServiceTest {
         override fun release() {
             released++
         }
+    }
+
+    private class QueuedExecutor : Executor {
+        private val tasks = ArrayDeque<Runnable>()
+
+        override fun execute(command: Runnable) {
+            tasks.addLast(command)
+        }
+
+        fun runNext() = tasks.removeFirst().run()
     }
 
     /**
@@ -216,6 +233,62 @@ class ScreenCaptureServiceTest {
         assertEquals(context.getString(R.string.error_session_failed), ScreenCaptureService.startupError.value)
         assertEquals(emptyList<String>(), environment.events)
         assertTrue(Shadows.shadowOf(service).isStoppedBySelf)
+    }
+
+    @Test fun queuedAttachmentPublishesConnectionOnlyAfterReadinessCompletes() {
+        val executor = QueuedExecutor()
+        val environment = RecordingEnvironment(executor)
+        val session = ScriptedSession(environment)
+        val scope = TestScope()
+        val started = newService(session)
+        started.get().scopeFactory = { scope }
+
+        started.get().handleCommand(capturedStartIntent(Activity.RESULT_OK, Intent()))
+
+        assertNull(ScreenCaptureService.connection.value)
+        assertEquals(listOf("register"), environment.events)
+
+        executor.runNext()
+        scope.testScheduler.runCurrent()
+
+        assertSame(started.get(), ScreenCaptureService.connection.value)
+    }
+
+    @Test fun queuedReaderInitializationFailureIsTerminalAndReleasesSourceResources() {
+        val executor = QueuedExecutor()
+        val environment = RecordingEnvironment(executor).apply { failReaderCreation = true }
+        val session = ScriptedSession(environment)
+        val scope = TestScope()
+        val started = newService(session)
+        started.get().scopeFactory = { scope }
+
+        started.get().handleCommand(capturedStartIntent(Activity.RESULT_OK, Intent()))
+        executor.runNext()
+        scope.testScheduler.runCurrent()
+
+        assertNull(ScreenCaptureService.connection.value)
+        assertEquals(context.getString(R.string.error_session_failed), ScreenCaptureService.startupError.value)
+        assertEquals(1, environment.released)
+        assertTrue(Shadows.shadowOf(started.get()).isStoppedBySelf)
+    }
+
+    @Test fun queuedDisplayInitializationFailureIsTerminalAndClosesReader() {
+        val executor = QueuedExecutor()
+        val environment = RecordingEnvironment(executor).apply { failDisplayAttachment = true }
+        val session = ScriptedSession(environment)
+        val scope = TestScope()
+        val started = newService(session)
+        started.get().scopeFactory = { scope }
+
+        started.get().handleCommand(capturedStartIntent(Activity.RESULT_OK, Intent()))
+        executor.runNext()
+        scope.testScheduler.runCurrent()
+
+        assertNull(ScreenCaptureService.connection.value)
+        assertEquals(context.getString(R.string.error_session_failed), ScreenCaptureService.startupError.value)
+        assertEquals(1, environment.readerCloses)
+        assertEquals(1, environment.released)
+        assertTrue(Shadows.shadowOf(started.get()).isStoppedBySelf)
     }
 
     @Test fun notificationCarriesSettingsAndPlainServiceStopControls() {

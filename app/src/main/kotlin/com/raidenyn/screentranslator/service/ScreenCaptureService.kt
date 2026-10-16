@@ -22,6 +22,7 @@ import com.raidenyn.screentranslator.capture.CaptureRequests
 import com.raidenyn.screentranslator.capture.CaptureStore
 import com.raidenyn.screentranslator.capture.ProjectionFrameSource
 import com.raidenyn.screentranslator.ui.TrampolineActivity
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -29,13 +30,15 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * Foreground service owning one consented MediaProjection session. Startup promotes the
  * service to the mediaProjection foreground type before the projection is acquired — API 34+
- * grants MediaProjection only to an already-foreground service — and the ready session is
- * published only once its capture pipeline exists. Explicit stop, destruction and projection
- * revocation converge on one idempotent cleanup, so no stale instance ever reports readiness.
+ * grants MediaProjection only to an already-foreground service — and the acquired source is
+ * published as the ready session only after it attaches its reader and display and its
+ * capture pipeline is built. Explicit stop, destruction and projection revocation converge
+ * on one idempotent cleanup, so no stale instance ever reports readiness.
  */
 class ScreenCaptureService : Service() {
 
@@ -71,12 +74,14 @@ class ScreenCaptureService : Service() {
     }
 
     /**
-     * Starts the session for one consent grant. A duplicate start while a session lives
-     * preserves it and discards the new token; every failure path converges on the same
-     * terminal cleanup and publishes the startup error.
+     * Starts the session for one consent grant. The acquired source is stored immediately but
+     * published only after its reader and display attach; both gate outcomes run on main, so
+     * a stop racing the attach wins. A duplicate start while a session lives preserves it and
+     * discards the new token, and every failure path converges on the same terminal cleanup
+     * and publishes the startup error.
      */
     private fun startSession(intent: Intent) {
-        if (pipeline != null) return
+        if (pipeline != null || source != null) return
         try {
             session.startForeground(this)
             val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
@@ -85,9 +90,14 @@ class ScreenCaptureService : Service() {
                 val started = session.acquire(this, resultCode, data, ::projectionStopped)
                 if (started != null) {
                     source = started
-                    pipeline = CaptureRequests(started, CaptureStore.from(this), sessionScope())
-                    connectedState.value = this
-                    startupErrorState.value = null
+                    sessionScope().launch(start = CoroutineStart.UNDISPATCHED) {
+                        try {
+                            started.awaitReady()
+                            onMain { publishIfLive(started) }
+                        } catch (_: Throwable) {
+                            onMain { if (source === started) startupFailed() }
+                        }
+                    }
                     return
                 }
             }
@@ -95,6 +105,19 @@ class ScreenCaptureService : Service() {
         } catch (_: Throwable) {
             startupFailed()
         }
+    }
+
+    /** Publishes the ready [started] session, unless a stop already claimed and cleared it. */
+    private fun publishIfLive(started: ProjectionFrameSource) {
+        if (source !== started) return
+        pipeline = CaptureRequests(started, CaptureStore.from(this), sessionScope())
+        connectedState.value = this
+        startupErrorState.value = null
+    }
+
+    /** Runs [task] on the main thread, inline when the caller is already there. */
+    private fun onMain(task: () -> Unit) {
+        if (Looper.myLooper() == main.looper) task() else main.post(task)
     }
 
     private fun startupFailed() {
@@ -110,7 +133,7 @@ class ScreenCaptureService : Service() {
 
     /** Revocation arrives on the frame source's state thread; teardown must run on main. */
     private fun projectionStopped() {
-        main.post { if (pipeline != null) stopSession() }
+        main.post { if (source != null) stopSession() }
     }
 
     /**

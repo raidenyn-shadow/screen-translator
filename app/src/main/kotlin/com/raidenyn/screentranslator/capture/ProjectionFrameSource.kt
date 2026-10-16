@@ -15,6 +15,7 @@ import android.view.Display
 import android.view.Surface
 import android.view.WindowManager
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.ByteBuffer
@@ -91,6 +92,7 @@ internal class ProjectionFrameSource internal constructor(
     private val environment: ProjectionEnvironment,
     private val timeoutMs: Long = FRAME_TIMEOUT_MS,
     private val onStopped: () -> Unit,
+    private val bitmapConverter: (ByteBuffer, Int, Int, Int, Int) -> Bitmap = ::rgbaToBitmap,
 ) : ScreenshotTaker, AutoCloseable {
 
     constructor(context: Context, projection: MediaProjection, onStopped: () -> Unit) : this(
@@ -101,6 +103,8 @@ internal class ProjectionFrameSource internal constructor(
     private val executor = environment.executor
     private val closed = AtomicBoolean(false)
     private val stoppedSignaled = AtomicBoolean(false)
+    private val environmentReleased = AtomicBoolean(false)
+    private val readiness = CompletableDeferred<Unit>()
 
     private var geometry = environment.geometry()
     private var reader: FrameReader? = null
@@ -108,14 +112,21 @@ internal class ProjectionFrameSource internal constructor(
     private var pending: PendingCapture? = null
 
     init {
-        environment.register(object : ProjectionEvents {
-            override fun onGeometryChanged(width: Int, height: Int) =
-                executor.execute { resize(width, height) }
+        try {
+            environment.register(object : ProjectionEvents {
+                override fun onGeometryChanged(width: Int, height: Int) =
+                    executor.execute { resize(width, height) }
 
-            override fun onStopped() = executor.execute { projectionStopped() }
-        })
-        executor.execute { start() }
+                override fun onStopped() = executor.execute { projectionStopped() }
+            })
+            executor.execute { start() }
+        } catch (error: Throwable) {
+            startupFailed(error)
+        }
     }
+
+    /** Completes only when this source has attached its one reader/display pair. */
+    internal suspend fun awaitReady() = readiness.await()
 
     override suspend fun take(): Bitmap {
         check(!closed.get()) { "frame source is closed" }
@@ -131,24 +142,31 @@ internal class ProjectionFrameSource internal constructor(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
-        executor.execute { teardown() }
-        environment.release()
+        executor.execute {
+            teardown()
+            releaseEnvironment()
+            readiness.completeExceptionally(IllegalStateException("frame source is closed"))
+        }
     }
 
     private fun start() {
         if (closed.get()) return
-        var created: FrameReader? = null
         try {
             val fresh = environment.createReader(geometry.width, geometry.height, READER_MAX_IMAGES)
-            created = fresh
-            fresh.onImageAvailable { executor.execute { onFrame(fresh) } }
             reader = fresh
+            fresh.onImageAvailable { executor.execute { onFrame(fresh) } }
             display = environment.attachDisplay(fresh, geometry)
-        } catch (_: Throwable) {
-            runCatching { created?.close() }
-            reader = null
-            display = null
+            readiness.complete(Unit)
+        } catch (error: Throwable) {
+            startupFailed(error)
         }
+    }
+
+    private fun startupFailed(error: Throwable) {
+        if (!closed.compareAndSet(false, true)) return
+        teardown()
+        releaseEnvironment()
+        readiness.completeExceptionally(error)
     }
 
     private fun arm(slot: PendingCapture) {
@@ -184,7 +202,7 @@ internal class ProjectionFrameSource internal constructor(
             pending = null
             try {
                 val plane = image.plane
-                slot.complete(rgbaToBitmap(plane.buffer, image.width, image.height, plane.pixelStride, plane.rowStride))
+                slot.complete(bitmapConverter(plane.buffer, image.width, image.height, plane.pixelStride, plane.rowStride))
             } catch (t: Throwable) {
                 slot.fail(t)
             }
@@ -227,8 +245,13 @@ internal class ProjectionFrameSource internal constructor(
     private fun projectionStopped() {
         if (!closed.compareAndSet(false, true)) return
         teardown()
-        environment.release()
+        releaseEnvironment()
+        readiness.completeExceptionally(IllegalStateException("projection stopped"))
         if (stoppedSignaled.compareAndSet(false, true)) onStopped()
+    }
+
+    private fun releaseEnvironment() {
+        if (environmentReleased.compareAndSet(false, true)) environment.release()
     }
 
     private fun teardown() {
@@ -246,7 +269,7 @@ internal class ProjectionFrameSource internal constructor(
     /** One awaited capture; identity-matched so a late cancellation frees only its own slot. */
     private class PendingCapture(private val continuation: CancellableContinuation<Bitmap>) {
         val active get() = continuation.isActive
-        fun complete(bitmap: Bitmap) = continuation.resume(bitmap)
+        fun complete(bitmap: Bitmap) = continuation.resume(bitmap) { _, value, _ -> value.recycle() }
         fun fail(error: Throwable) = continuation.resumeWithException(error)
     }
 }
