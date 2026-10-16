@@ -1,122 +1,163 @@
 package com.raidenyn.screentranslator.ui
 
+import android.app.Activity
+import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.os.Bundle
-import android.os.Looper
+import android.view.ViewGroup
 import androidx.test.core.app.ApplicationProvider
-import com.raidenyn.screentranslator.capture.CaptureOrchestrator
-import com.raidenyn.screentranslator.capture.CaptureStore
-import com.raidenyn.screentranslator.capture.ScreenshotTaker
 import com.raidenyn.screentranslator.service.ScreenCaptureService
-import kotlinx.coroutines.awaitCancellation
+import com.raidenyn.screentranslator.service.SessionBoot
+import com.raidenyn.screentranslator.service.bootFrom
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.TestScope
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows.shadowOf
-import org.robolectric.android.controller.ServiceController
+import org.robolectric.Shadows
+import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
-import org.robolectric.util.ReflectionHelpers
+import org.robolectric.shadow.api.Shadow
+import org.robolectric.shadows.ShadowActivity
+import org.robolectric.shadows.ShadowLooper
+import java.util.UUID
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 @LooperMode(LooperMode.Mode.PAUSED)
 class ReusedLaunchTest {
-    private val scope = TestScope()
-    private var service: ServiceController<ScreenCaptureService>? = null
-    private var dispatches = 0
+
+    private val context = ApplicationProvider.getApplicationContext<Context>()
+    private val app = ApplicationProvider.getApplicationContext<Application>()
+    private val testScope = TestScope()
+    private val activities = mutableListOf<ActivityController<out Activity>>()
+    private var boot: SessionBoot? = null
 
     @After fun clean() {
-        service?.destroy()
-        scope.cancel()
+        activities.forEach { it.pause().stop().destroy() }
+        boot?.controller?.destroy()
+        boot = null
+        testScope.cancel()
     }
 
     private fun sidebar() = Intent(Intent.ACTION_MAIN)
         .putExtra("from_package", "com.coloros.smartsidebar")
 
-    private fun connect() {
-        val controller = Robolectric.buildService(ScreenCaptureService::class.java).create()
-        service = controller
-        val instance = controller.get()
-        ReflectionHelpers.setField(instance, "realOrchestrator", CaptureOrchestrator(
-            taker = ScreenshotTaker { error("capture must wait for the settings UI to close") },
-            store = CaptureStore.from(instance), launcher = { null }, onError = {}, scope = scope,
-            delayer = { dispatches++; awaitCancellation() },
-        ))
-        ReflectionHelpers.callInstanceMethod<Unit>(instance, "onServiceConnected")
-    }
+    private fun icon() = Intent(Intent.ACTION_MAIN)
+
+    private fun consentData(): Intent =
+        Intent().putExtra("media_projection_token", UUID.randomUUID().toString())
+
+    private fun isTranslucent(activity: Activity): Boolean =
+        activity.theme.obtainStyledAttributes(intArrayOf(android.R.attr.windowIsTranslucent))
+            .getBoolean(0, false)
+
+    private fun contentChildren(activity: Activity): Int =
+        activity.findViewById<ViewGroup>(android.R.id.content)!!.childCount
+
+    private fun shadow(activity: Activity): ShadowActivity = Shadow.extract(activity) as ShadowActivity
+
+    private fun launchedConsent(activity: Activity) =
+        shadow(activity).nextStartedActivityForResult
+            ?: error("no consent intent was launched")
 
     @Test fun launcherRemainsTheTaskRootAndReceivesNewLaunches() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
         val info = context.packageManager.getActivityInfo(ComponentName(context, TrampolineActivity::class.java), 0)
         assertEquals(ActivityInfo.LAUNCH_SINGLE_TASK, info.launchMode)
         assertEquals(0, info.flags and ActivityInfo.FLAG_NO_HISTORY)
     }
 
-    @Test fun sidebarIntentToExistingSettingsDispatchesAndClosesTheSameActivity() {
-        connect()
-        val controller = Robolectric.buildActivity(TrampolineActivity::class.java).setup()
-        shadowOf(Looper.getMainLooper()).idle()
-        assertFalse(controller.get().isFinishing)
-        assertEquals(0, dispatches)
+    @Test fun sidebarIntentToExistingSettingsRequestsConsentOnTheSameActivity() {
+        val root = Robolectric.buildActivity(TrampolineActivity::class.java).setup().also { activities.add(it) }
+        ShadowLooper.idleMainLooper()
+        val original = root.get()
+        assertFalse(original.isFinishing)
 
-        controller.newIntent(sidebar())
-        shadowOf(Looper.getMainLooper()).idle()
-        scope.testScheduler.runCurrent()
-        assertTrue(controller.get().isFinishing)
-        assertEquals(1, dispatches)
-        controller.pause().stop().destroy()
+        root.newIntent(sidebar())
+        ShadowLooper.idleMainLooper()
+
+        assertSame(original, root.get())
+        launchedConsent(original)
+        assertFalse(root.get().isFinishing)
     }
 
-    @Test fun sidebarIntentToExistingSettingsWaitsForAServiceConnection() {
-        val controller = Robolectric.buildActivity(TrampolineActivity::class.java).setup()
-        controller.newIntent(sidebar())
-        shadowOf(Looper.getMainLooper()).idle()
-        assertFalse(controller.get().isFinishing)
+    @Test fun sidebarIntentToExistingSettingsWaitsForProjectionReadiness() {
+        val root = Robolectric.buildActivity(TrampolineActivity::class.java).setup().also { activities.add(it) }
+        ShadowLooper.idleMainLooper()
+        root.newIntent(sidebar())
+        ShadowLooper.idleMainLooper()
+        val consent = launchedConsent(root.get())
 
-        connect()
-        shadowOf(Looper.getMainLooper()).idle()
-        scope.testScheduler.runCurrent()
-        assertTrue(controller.get().isFinishing)
-        assertEquals(1, dispatches)
-        controller.pause().stop().destroy()
+        Shadows.shadowOf(root.get()).receiveResult(consent.intent, Activity.RESULT_OK, consentData())
+        ShadowLooper.idleMainLooper()
+        val start = Shadows.shadowOf(app).nextStartedService ?: error("consent did not start the service")
+        boot = bootFrom(start, testScope)
+        ShadowLooper.idleMainLooper()
+
+        val captureRoot = root.get()
+        assertTrue(isTranslucent(captureRoot))
+        assertEquals(0, contentChildren(captureRoot))
+        val launch = shadow(captureRoot).nextStartedActivityForResult ?: error("no capture child opened")
+        assertEquals(ComponentName(context, CaptureActivity::class.java), launch.intent.component)
+        assertNotNull(launch.intent.getStringExtra(CaptureActivity.EXTRA_REQUEST_ID))
     }
 
     @Test fun iconIntentCancelsAnOlderPendingSidebarCaptureAcrossRecreation() {
-        val controller = Robolectric.buildActivity(TrampolineActivity::class.java, sidebar()).setup()
-        controller.newIntent(Intent(Intent.ACTION_MAIN))
-        controller.recreate()
-        connect()
-        shadowOf(Looper.getMainLooper()).idle()
-        scope.testScheduler.runCurrent()
-        assertFalse(controller.get().isFinishing)
-        assertEquals(0, dispatches)
-        controller.pause().stop().destroy()
+        val root = Robolectric.buildActivity(TrampolineActivity::class.java).setup().also { activities.add(it) }
+        ShadowLooper.idleMainLooper()
+        root.newIntent(sidebar())
+        ShadowLooper.idleMainLooper()
+        val consent = launchedConsent(root.get())
+
+        root.newIntent(icon())
+        ShadowLooper.idleMainLooper()
+        val settings = root.get()
+        assertTrue(contentChildren(settings) > 0)
+
+        Shadows.shadowOf(settings).receiveResult(consent.intent, Activity.RESULT_OK, consentData())
+        ShadowLooper.idleMainLooper()
+        val start = Shadows.shadowOf(app).nextStartedService ?: error("the granted consent was not forwarded")
+        boot = bootFrom(start, testScope)
+        ShadowLooper.idleMainLooper()
+
+        assertNull(shadow(root.get()).peekNextStartedActivityForResult())
+        assertTrue(contentChildren(root.get()) > 0)
     }
 
     @Test fun restoredPendingCaptureWaitsForANewerIconIntentBeforeResume() {
         val original = Robolectric.buildActivity(TrampolineActivity::class.java, sidebar()).setup()
+            .also { activities.add(it) }
+        ShadowLooper.idleMainLooper()
+        val consent = launchedConsent(original.get())
+
         val state = Bundle()
         original.pause().saveInstanceState(state).stop().destroy()
-        connect()
+        val restored = Robolectric.buildActivity(TrampolineActivity::class.java, sidebar())
+            .create(state).also { activities.add(it) }
 
-        val restored = Robolectric.buildActivity(TrampolineActivity::class.java, sidebar()).create(state)
-        assertFalse(restored.get().isFinishing)
-        restored.newIntent(Intent(Intent.ACTION_MAIN)).start().resume()
-        shadowOf(Looper.getMainLooper()).idle()
-        scope.testScheduler.runCurrent()
-        assertFalse(restored.get().isFinishing)
-        assertEquals(0, dispatches)
-        restored.pause().stop().destroy()
+        restored.newIntent(icon()).start().resume()
+        ShadowLooper.idleMainLooper()
+        assertNull(shadow(restored.get()).peekNextStartedActivityForResult())
+
+        Shadows.shadowOf(restored.get()).receiveResult(consent.intent, Activity.RESULT_OK, consentData())
+        ShadowLooper.idleMainLooper()
+        val start = Shadows.shadowOf(app).nextStartedService ?: error("the granted consent was not forwarded")
+        boot = bootFrom(start, testScope)
+        ShadowLooper.idleMainLooper()
+
+        assertNull(shadow(restored.get()).peekNextStartedActivityForResult())
+        assertTrue(contentChildren(restored.get()) > 0)
     }
 }

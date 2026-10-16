@@ -12,6 +12,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlin.coroutines.coroutineContext
 
+/** Wait between requesting a capture and reading the newly exposed frame. */
+const val CAPTURE_DELAY_MS = 400L
+
+/** Which user-visible capture step failed. */
+sealed interface CaptureError {
+    data object ScreenshotFailed : CaptureError
+    data object SaveFailed : CaptureError
+    data object LaunchFailed : CaptureError
+}
+
 /** Captures the visible display as a software bitmap. */
 fun interface ScreenshotTaker {
     suspend fun take(): Bitmap

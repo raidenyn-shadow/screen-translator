@@ -1,208 +1,274 @@
 package com.raidenyn.screentranslator.service
 
-import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.AccessibilityService.ScreenshotResult
-import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
-import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.Activity
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.net.Uri
-import android.os.Build
+import android.content.pm.ServiceInfo
+import android.media.projection.MediaProjectionManager
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
-import android.view.Display
-import android.view.accessibility.AccessibilityEvent
-import android.widget.Toast
+import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
+import androidx.core.content.IntentCompat
 import com.raidenyn.screentranslator.R
 import com.raidenyn.screentranslator.capture.CaptureError
-import com.raidenyn.screentranslator.capture.CaptureOrchestrator
+import com.raidenyn.screentranslator.capture.CaptureRequests
 import com.raidenyn.screentranslator.capture.CaptureStore
-import com.raidenyn.screentranslator.capture.ScreenshotTaker
-import com.raidenyn.screentranslator.capture.ScreenshotUnsupportedException
-import com.raidenyn.screentranslator.lens.IntentStarter
-import com.raidenyn.screentranslator.lens.LensLauncher
-import com.raidenyn.screentranslator.lens.LensTranslationSession
+import com.raidenyn.screentranslator.capture.ProjectionFrameSource
+import com.raidenyn.screentranslator.ui.TrampolineActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withContext
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
- * Captures the display, shares it with Lens, and selects Translate once. Window
- * inspection runs only for the bounded translation attempt following a capture.
+ * Foreground service owning one consented MediaProjection session. Startup promotes the
+ * service to the mediaProjection foreground type before the projection is acquired — API 34+
+ * grants MediaProjection only to an already-foreground service — and the ready session is
+ * published only once its capture pipeline exists. Explicit stop, destruction and projection
+ * revocation converge on one idempotent cleanup, so no stale instance ever reports readiness.
  */
-class ScreenCaptureService : AccessibilityService() {
+class ScreenCaptureService : Service() {
 
-    private lateinit var scope: CoroutineScope
-    private var realOrchestrator: CaptureOrchestrator? = null
-    private var translationSession: LensTranslationSession? = null
+    /** Framework seam scripted by tests; production promotes and acquires via [MediaProjectionSession]. */
+    internal var session: ProjectionSession = MediaProjectionSession
+
+    /** Produces the scope capture work runs on; tests install a scripted one before the session starts. */
+    internal var scopeFactory: () -> CoroutineScope = {
+        CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    }
+
+    private var scope: CoroutineScope? = null
+    private var source: ProjectionFrameSource? = null
+    private var pipeline: CaptureRequests? = null
     private val main = Handler(Looper.getMainLooper())
 
-    private fun orchestrator(): CaptureOrchestrator =
-        realOrchestrator ?: buildOrchestrator().also { realOrchestrator = it }
+    /** The session's capture pipeline; valid only while the companion connection publishes this instance. */
+    internal val requests: CaptureRequests
+        get() = pipeline ?: error("requests exist only on a ready connection")
 
-    override fun onCreate() {
-        super.onCreate()
-        scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    override fun onBind(intent: Intent): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = handleCommand(intent)
+
+    /** Returns the stickiness the system should honor for [intent]; the session is never restarted. */
+    internal fun handleCommand(intent: Intent?): Int {
+        when (intent?.action) {
+            ACTION_START -> startSession(intent)
+            ACTION_STOP -> stopSession()
+            else -> stopSelf()
+        }
+        return START_NOT_STICKY
     }
 
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        connectedService.value = this
+    /**
+     * Starts the session for one consent grant. A duplicate start while a session lives
+     * preserves it and discards the new token; every failure path converges on the same
+     * terminal cleanup and publishes the startup error.
+     */
+    private fun startSession(intent: Intent) {
+        if (pipeline != null) return
+        try {
+            session.startForeground(this)
+            val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
+            val data = IntentCompat.getParcelableExtra(intent, EXTRA_CONSENT_DATA, Intent::class.java)
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                val started = session.acquire(this, resultCode, data, ::projectionStopped)
+                if (started != null) {
+                    source = started
+                    pipeline = CaptureRequests(started, CaptureStore.from(this), sessionScope())
+                    connectedState.value = this
+                    startupErrorState.value = null
+                    return
+                }
+            }
+            startupFailed()
+        } catch (_: Throwable) {
+            startupFailed()
+        }
     }
 
-    override fun onUnbind(intent: Intent): Boolean {
-        if (instance === this) connectedService.value = null
-        translationSession?.cancel()
-        scope.coroutineContext.cancelChildren()
-        // A canceled capture may not have released its duplicate guard yet.
-        // Reconnection must get a fresh pipeline rather than dropping its first tap.
-        realOrchestrator = null
-        return super.onUnbind(intent)
+    private fun startupFailed() {
+        stopSession()
+        startupErrorState.value = getString(R.string.error_session_failed)
+    }
+
+    private fun stopSession() {
+        cleanup()
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    /** Revocation arrives on the frame source's state thread; teardown must run on main. */
+    private fun projectionStopped() {
+        main.post { if (pipeline != null) stopSession() }
+    }
+
+    /**
+     * Idempotent: closes the pipeline before the frame source so an in-flight capture is
+     * canceled while its reader still exists, then unbinds the singleton session.
+     */
+    private fun cleanup() {
+        if (connectedState.value === this) connectedState.value = null
+        pipeline?.close()
+        pipeline = null
+        source?.close()
+        source = null
     }
 
     override fun onDestroy() {
-        if (instance === this) connectedService.value = null
-        translationSession?.cancel()
-        realOrchestrator = null
-        scope.cancel()
+        cleanup()
+        scope?.cancel()
         super.onDestroy()
     }
 
-    /** Passive events never start a capture or arm UI interaction. */
-    override fun onAccessibilityEvent(event: AccessibilityEvent) {}
-
-    override fun onInterrupt() { translationSession?.cancel() }
-
-    private suspend fun launchAndTranslate(uri: Uri, launcher: LensLauncher): CaptureError? =
-        withContext<CaptureError?>(Dispatchers.Main.immediate) {
-            if ((serviceInfo?.capabilities ?: 0) and
-                AccessibilityServiceInfo.CAPABILITY_CAN_RETRIEVE_WINDOW_CONTENT == 0) {
-                return@withContext CaptureError.AccessibilityUnavailable
-            }
-            suspendCancellableCoroutine<CaptureError?> { continuation ->
-                lateinit var session: LensTranslationSession
-                session = LensTranslationSession(
-                    readWindow = { rootInActiveWindow },
-                    onFinished = { result ->
-                        if (translationSession === session) translationSession = null
-                        if (continuation.isActive) {
-                            continuation.resume(when (result) {
-                                LensTranslationSession.Result.SELECTED,
-                                LensTranslationSession.Result.CANCELED -> null
-                                LensTranslationSession.Result.LAUNCH_FAILED -> CaptureError.LaunchFailed
-                                LensTranslationSession.Result.SELECTION_FAILED -> CaptureError.TranslationFailed
-                            })
-                        }
-                    },
-                )
-                translationSession = session
-                continuation.invokeOnCancellation {
-                    main.post {
-                        if (translationSession === session) {
-                            translationSession = null
-                            session.cancel()
-                        }
-                    }
-                }
-                if (continuation.isActive) session.start { launcher.launch(uri) }
-            }
-        }
-
-    private fun buildOrchestrator(): CaptureOrchestrator {
-        val launcher = LensLauncher(contentResolver, IntentStarter(this::startActivity))
-        return CaptureOrchestrator(
-            taker = RealScreenshotTaker(this),
-            store = CaptureStore.from(this),
-            launcher = { uri -> launchAndTranslate(uri, launcher) },
-            onError = { error ->
-                main.post { Toast.makeText(this, error.labelRes, Toast.LENGTH_SHORT).show() }
-            },
-            scope = scope,
-        )
-    }
-
-    /** Calls the accessibility screenshot API and copies the result out of hardware memory. */
-    private class RealScreenshotTaker(private val service: ScreenCaptureService) : ScreenshotTaker {
-
-        override suspend fun take(): Bitmap {
-            // The display-scoped takeScreenshot overload only exists from API 33; on older
-            // devices throw the dedicated type so the toast states the permanent condition
-            // instead of a "try again" hint.
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) throw ScreenshotUnsupportedException()
-            return suspendCancellableCoroutine { continuation ->
-                service.takeScreenshot(
-                    Display.DEFAULT_DISPLAY,
-                    Runnable::run,
-                    object : TakeScreenshotCallback {
-                        override fun onSuccess(result: ScreenshotResult) {
-                            val buffer = result.hardwareBuffer
-                            try {
-                                if (continuation.isActive) {
-                                    try {
-                                        val hardware = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
-                                        if (hardware == null) {
-                                            continuation.resumeWithException(
-                                                IllegalStateException("screenshot buffer could not be wrapped")
-                                            )
-                                        } else {
-                                            // Hardware bitmaps cannot be PNG-compressed: copy to software memory.
-                                            continuation.resume(hardware.copy(Bitmap.Config.ARGB_8888, false))
-                                        }
-                                    } catch (t: Throwable) {
-                                        // The copy is the pipeline's largest allocation and OOM is an Error,
-                                        // not an Exception: resume anyway so the failure reaches the
-                                        // orchestrator instead of escaping the callback (killing the process)
-                                        // or leaving take() suspended forever.
-                                        continuation.resumeWithException(t)
-                                    }
-                                }
-                            } finally {
-                                buffer.close()
-                            }
-                        }
-
-                        override fun onFailure(errorCode: Int) {
-                            if (continuation.isActive) {
-                                continuation.resumeWithException(
-                                    IllegalStateException("takeScreenshot failed with error $errorCode")
-                                )
-                            }
-                        }
-                    }
-                )
-            }
-        }
-    }
+    private fun sessionScope(): CoroutineScope = scope ?: scopeFactory().also { scope = it }
 
     companion object {
-        private val connectedService = MutableStateFlow<ScreenCaptureService?>(null)
-        /** Emits only services that Android has connected and made ready for accessibility calls. */
-        val connection = connectedService.asStateFlow()
-        val instance: ScreenCaptureService? get() = connectedService.value
+        internal const val ACTION_START = "com.raidenyn.screentranslator.session.START"
+        internal const val ACTION_STOP = "com.raidenyn.screentranslator.session.STOP"
+        internal const val EXTRA_RESULT_CODE = "result_code"
+        internal const val EXTRA_CONSENT_DATA = "consent_data"
 
-        /** Posts a capture to the running service; false if there is none or one is already in flight. */
-        fun requestCapture(): Boolean = instance?.orchestrator()?.tryDispatch() ?: false
+        private val connectedState = MutableStateFlow<ScreenCaptureService?>(null)
+        private val startupErrorState = MutableStateFlow<String?>(null)
+
+        /** The ready session's service, or null; publishes only fully initialized sessions. */
+        val connection: StateFlow<ScreenCaptureService?> = connectedState.asStateFlow()
+
+        /** Terminal reason the last session attempt failed; cleared by the next successful session. */
+        val startupError: StateFlow<String?> = startupErrorState.asStateFlow()
+
+        /** Starts a session for consent granted with [data]; a new attempt clears any old error. */
+        fun start(context: Context, resultCode: Int, data: Intent) {
+            startupErrorState.value = null
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, ScreenCaptureService::class.java)
+                    .setAction(ACTION_START)
+                    .putExtra(EXTRA_RESULT_CODE, resultCode)
+                    .putExtra(EXTRA_CONSENT_DATA, data),
+            )
+        }
+
+        /** Stops a running session; stopping needs no new foreground-service start. */
+        fun stop(context: Context) {
+            context.startService(
+                Intent(context, ScreenCaptureService::class.java).setAction(ACTION_STOP),
+            )
+        }
+
     }
 }
 
 /**
- * Maps each capture/translation failure onto its user-facing toast message.
+ * Framework seam over session startup, scripted by tests. Foreground promotion must precede
+ * projection acquisition, and the acquired frame source must register its projection callback
+ * before creating its display.
+ */
+internal interface ProjectionSession {
+
+    /** Promotes [service] to a mediaProjection-type foreground service with the sharing notification. */
+    fun startForeground(service: ScreenCaptureService)
+
+    /**
+     * Builds the frame source for the consent in [data], or null when consent was refused.
+     * The projection callback is registered before the display is created.
+     */
+    fun acquire(
+        context: Context,
+        resultCode: Int,
+        data: Intent,
+        onStopped: () -> Unit,
+    ): ProjectionFrameSource?
+}
+
+/** Production [ProjectionSession] over MediaProjectionManager and ServiceCompat. */
+internal object MediaProjectionSession : ProjectionSession {
+
+    private const val CHANNEL_ID = "screen_capture"
+    private const val NOTIFICATION_ID = 1
+    private const val SETTINGS_REQUEST = 0
+    private const val STOP_REQUEST = 1
+
+    override fun startForeground(service: ScreenCaptureService) {
+        val manager = service.getSystemService(NotificationManager::class.java)!!
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_ID,
+                service.getString(R.string.notification_channel_name),
+                NotificationManager.IMPORTANCE_LOW,
+            ),
+        )
+        val notification = Notification.Builder(service, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_capture_notification)
+            .setContentTitle(service.getString(R.string.notification_sharing_title))
+            .setContentText(service.getString(R.string.notification_sharing_text))
+            .setOngoing(true)
+            .setContentIntent(settingsIntent(service))
+            .addAction(stopAction(service))
+            .build()
+        ServiceCompat.startForeground(
+            service,
+            NOTIFICATION_ID,
+            notification,
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+        )
+    }
+
+    override fun acquire(
+        context: Context,
+        resultCode: Int,
+        data: Intent,
+        onStopped: () -> Unit,
+    ): ProjectionFrameSource? {
+        if (resultCode != Activity.RESULT_OK) return null
+        val manager = context.getSystemService(MediaProjectionManager::class.java) ?: return null
+        val projection = manager.getMediaProjection(resultCode, data) ?: return null
+        return ProjectionFrameSource(context, projection, onStopped)
+    }
+
+    private fun settingsIntent(service: Service): PendingIntent =
+        PendingIntent.getActivity(
+            service,
+            SETTINGS_REQUEST,
+            Intent(service, TrampolineActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    /** A stop action needs no new foreground-service start, so it is a plain service PendingIntent. */
+    private fun stopIntent(service: Service): PendingIntent =
+        PendingIntent.getService(
+            service,
+            STOP_REQUEST,
+            Intent(service, ScreenCaptureService::class.java).setAction(ScreenCaptureService.ACTION_STOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    @Suppress("DEPRECATION")
+    private fun stopAction(service: Service): Notification.Action =
+        Notification.Action.Builder(
+            0,
+            service.getString(R.string.notification_stop_action),
+            stopIntent(service),
+        ).build()
+}
+
+/**
+ * Maps each capture failure onto its user-facing message.
  */
 internal val CaptureError.labelRes: Int
     get() = when (this) {
-        CaptureError.ScreenshotUnsupported -> R.string.error_screenshot_unsupported
         CaptureError.ScreenshotFailed -> R.string.error_screenshot_failed
         CaptureError.SaveFailed -> R.string.error_save_failed
-    CaptureError.LaunchFailed -> R.string.error_launch_failed
-    CaptureError.TranslationFailed -> R.string.error_translation_failed
-    CaptureError.AccessibilityUnavailable -> R.string.error_accessibility_unavailable
+        CaptureError.LaunchFailed -> R.string.error_launch_failed
     }

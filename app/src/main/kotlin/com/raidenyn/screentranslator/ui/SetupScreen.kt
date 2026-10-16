@@ -16,24 +16,18 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.raidenyn.screentranslator.R
-import com.raidenyn.screentranslator.service.ScreenCaptureService
 
 /**
- * One-time setup page: live capture-service status, links into the system settings
- * the user touches once, and the Smart Sidebar how-to. Shown by
- * [SetupActivity] whenever the service is not running.
+ * Settings page for starting and stopping the current sharing session.
  */
 @Composable
-fun SetupScreen() {
+fun SetupScreen(sharing: Boolean, onStartSharing: () -> Unit, onStopSharing: () -> Unit) {
     val context = LocalContext.current
-    val service by ScreenCaptureService.connection.collectAsState()
 
     MaterialTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
@@ -48,12 +42,12 @@ fun SetupScreen() {
                     text = stringResource(R.string.setup_title),
                     style = MaterialTheme.typography.headlineMedium
                 )
-                ServiceStatusChip(on = service != null)
+                ServiceStatusChip(on = sharing)
                 Button(
-                    onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+                    onClick = if (sharing) onStopSharing else onStartSharing,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(stringResource(R.string.setup_enable_service))
+                    Text(stringResource(if (sharing) R.string.setup_stop_sharing else R.string.setup_start_sharing))
                 }
                 OutlinedButton(
                     onClick = {
@@ -73,7 +67,7 @@ fun SetupScreen() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = stringResource(R.string.service_accessibility_description),
+                    text = stringResource(R.string.setup_sharing_description),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
