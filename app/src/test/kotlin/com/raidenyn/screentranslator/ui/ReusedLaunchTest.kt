@@ -136,7 +136,7 @@ class ReusedLaunchTest {
         assertTrue(contentChildren(root.get()) > 0)
     }
 
-    @Test fun restoredPendingCaptureWaitsForANewerIconIntentBeforeResume() {
+    @Test fun processRestorationDiscardsOldConsentUntilANewSidebarRequest() {
         val original = Robolectric.buildActivity(TrampolineActivity::class.java, sidebar()).setup()
             .also { activities.add(it) }
         ShadowLooper.idleMainLooper()
@@ -154,11 +154,14 @@ class ReusedLaunchTest {
 
         Shadows.shadowOf(restored.get()).receiveResult(consent.intent, Activity.RESULT_OK, consentData())
         ShadowLooper.idleMainLooper()
-        val start = Shadows.shadowOf(app).nextStartedService ?: error("the granted consent was not forwarded")
-        boot = bootFrom(start, testScope)
-        ShadowLooper.idleMainLooper()
+        assertNull(Shadows.shadowOf(app).peekNextStartedService())
 
-        assertNull(shadow(restored.get()).peekNextStartedActivityForResult())
-        assertTrue(contentChildren(restored.get()) > 0)
+        restored.newIntent(sidebar())
+        ShadowLooper.idleMainLooper()
+        val freshConsent = launchedConsent(restored.get())
+        Shadows.shadowOf(restored.get()).receiveResult(freshConsent.intent, Activity.RESULT_OK, consentData())
+        ShadowLooper.idleMainLooper()
+        val start = Shadows.shadowOf(app).nextStartedService ?: error("the fresh consent was not forwarded")
+        assertEquals(ScreenCaptureService.ACTION_START, start.action)
     }
 }

@@ -267,7 +267,7 @@ class SetupActivityTest {
         assertNull(Shadows.shadowOf(app).peekNextStartedService())
     }
 
-    @Test fun deferredConsentSurvivesRecreationBeforeResumeAndStartsOnce() {
+    @Test fun deferredConsentSurvivesSameProcessConfigurationRecreationAndStartsOnceAfterResume() {
         val controller = Robolectric.buildActivity(StateSavingSetupActivity::class.java, pendingIntent()).setup()
             .also { activities.add(it) }
         ShadowLooper.idleMainLooper()
@@ -278,24 +278,40 @@ class SetupActivityTest {
         ShadowLooper.idleMainLooper()
         assertNull(Shadows.shadowOf(app).peekNextStartedService())
 
-        val state = Bundle()
-        controller.get().save(state)
-        controller.destroy()
-        activities.remove(controller)
-        val restored = Robolectric.buildActivity(StateSavingSetupActivity::class.java, pendingIntent()).create(state)
-            .also { activities.add(it) }
+        controller.recreate()
         ShadowLooper.idleMainLooper()
-        assertNull(Shadows.shadowOf(app).peekNextStartedService())
 
-        restored.start().resume()
+        controller.start().resume()
         ShadowLooper.idleMainLooper()
-        assertEquals(Lifecycle.State.RESUMED, restored.get().lifecycle.currentState)
+        assertEquals(Lifecycle.State.RESUMED, controller.get().lifecycle.currentState)
         assertEquals(ScreenCaptureService.ACTION_START, Shadows.shadowOf(app).nextStartedService?.action)
         assertNull(Shadows.shadowOf(app).peekNextStartedService())
 
-        restored.recreate()
+        controller.recreate()
         ShadowLooper.idleMainLooper()
         assertNull(Shadows.shadowOf(app).peekNextStartedService())
+    }
+
+    @Test fun stateOnlyProcessRecreationDiscardsDeferredConsentAndRequestsFreshConsent() {
+        val original = Robolectric.buildActivity(StateSavingSetupActivity::class.java, pendingIntent()).setup()
+            .also { activities.add(it) }
+        ShadowLooper.idleMainLooper()
+        val consent = launchedConsent(original.get())
+
+        original.pause().stop()
+        original.get().deliverConsentResult(Activity.RESULT_OK, consentData())
+        val state = Bundle()
+        original.get().save(state)
+        original.destroy()
+        activities.remove(original)
+
+        val restored = Robolectric.buildActivity(StateSavingSetupActivity::class.java, pendingIntent()).create(state)
+            .also { activities.add(it) }
+        restored.start().resume()
+        ShadowLooper.idleMainLooper()
+
+        assertNull(Shadows.shadowOf(app).peekNextStartedService())
+        assertNotNull(shadow(restored.get()).peekNextStartedActivityForResult())
     }
 
     @Test fun consentIntentFailureReturnsToSettingsAndAllowsAnotherStart() {

@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.Lifecycle
@@ -25,12 +26,11 @@ import java.util.UUID
 open class SetupActivity : ComponentActivity() {
 
     private var pendingCapture = false
-    private var consentInFlight = false
     private var captureMode = false
     private var requestId: String? = null
     private var childLaunched = false
     private var awaitingSession = false
-    private var deferredConsent: Pair<Int, Intent?>? = null
+    private val consentState by viewModels<SetupConsentViewModel>()
 
     private val consent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         consentResult(result.resultCode, result.data)
@@ -48,15 +48,10 @@ open class SetupActivity : ComponentActivity() {
             ?: intent.getBooleanExtra(EXTRA_CAPTURE_MODE, false)
         pendingCapture = savedInstanceState?.getBoolean(STATE_PENDING_CAPTURE)
             ?: captureRequested(intent)
-        consentInFlight = savedInstanceState?.getBoolean(STATE_CONSENT_IN_FLIGHT) ?: false
         requestId = savedInstanceState?.getString(STATE_REQUEST_ID)
             ?: intent.getStringExtra(EXTRA_REQUEST_ID)
         childLaunched = savedInstanceState?.getBoolean(STATE_CHILD_LAUNCHED) ?: false
         awaitingSession = savedInstanceState?.getBoolean(STATE_AWAITING_SESSION) ?: false
-        if (savedInstanceState?.getBoolean(STATE_DEFERRED_CONSENT) == true) {
-            deferredConsent = savedInstanceState.getInt(STATE_DEFERRED_RESULT_CODE) to
-                savedInstanceState.getParcelable(STATE_DEFERRED_DATA)
-        }
         setTheme(if (captureMode) R.style.Theme_ScreenTranslator_Capture else R.style.Theme_ScreenTranslator_Setup)
         super.onCreate(savedInstanceState)
         if (!captureMode) {
@@ -95,15 +90,15 @@ open class SetupActivity : ComponentActivity() {
         super.onResume()
         when {
             captureMode && !childLaunched -> launchCapture()
-            !captureMode && pendingCapture && ScreenCaptureService.connection.value == null && !consentInFlight && !awaitingSession -> requestConsent()
+            !captureMode && pendingCapture && ScreenCaptureService.connection.value == null && !consentState.consentInFlight && !awaitingSession -> requestConsent()
             !captureMode && pendingCapture -> beginCapture()
         }
     }
 
     private fun deliverDeferredConsent() {
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
-        deferredConsent?.let { (code, data) ->
-            deferredConsent = null
+        consentState.deferredConsent?.let { (code, data) ->
+            consentState.deferredConsent = null
             consentResult(code, data)
         }
     }
@@ -119,27 +114,21 @@ open class SetupActivity : ComponentActivity() {
         }
         pendingCapture = true
         if (ScreenCaptureService.connection.value != null) beginCapture()
-        else if (!consentInFlight && !awaitingSession) requestConsent()
+        else if (!consentState.consentInFlight && !awaitingSession) requestConsent()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean(STATE_PENDING_CAPTURE, pendingCapture)
-        outState.putBoolean(STATE_CONSENT_IN_FLIGHT, consentInFlight)
         outState.putBoolean(STATE_CAPTURE_MODE, captureMode)
         outState.putString(STATE_REQUEST_ID, requestId)
         outState.putBoolean(STATE_CHILD_LAUNCHED, childLaunched)
         outState.putBoolean(STATE_AWAITING_SESSION, awaitingSession)
-        deferredConsent?.let { (code, data) ->
-            outState.putBoolean(STATE_DEFERRED_CONSENT, true)
-            outState.putInt(STATE_DEFERRED_RESULT_CODE, code)
-            outState.putParcelable(STATE_DEFERRED_DATA, data)
-        }
         super.onSaveInstanceState(outState)
     }
 
     private fun requestConsent() {
-        if (consentInFlight || awaitingSession) return
-        consentInFlight = true
+        if (consentState.consentInFlight || awaitingSession) return
+        consentState.consentInFlight = true
         try {
             val intent = consentIntent()
             launchConsent(intent)
@@ -149,12 +138,12 @@ open class SetupActivity : ComponentActivity() {
     }
 
     protected open fun consentResult(resultCode: Int, data: Intent?) {
-        if (!consentInFlight) return
+        if (!consentState.consentInFlight) return
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
-            deferredConsent = resultCode to data
+            consentState.deferredConsent = resultCode to data
             return
         }
-        consentInFlight = false
+        consentState.consentInFlight = false
         if (resultCode != Activity.RESULT_OK || data == null) { returnToSettings(); return }
         awaitingSession = true
         try { startSession(resultCode, data) } catch (_: Throwable) { failToSettings(getString(R.string.error_session_failed)) }
@@ -200,8 +189,8 @@ open class SetupActivity : ComponentActivity() {
         requestId = null
         childLaunched = false
         awaitingSession = false
-        consentInFlight = false
-        deferredConsent = null
+        consentState.consentInFlight = false
+        consentState.deferredConsent = null
         intent.removeExtra(EXTRA_CAPTURE_MODE)
         intent.removeExtra(EXTRA_REQUEST_ID)
         recreate()
@@ -217,13 +206,9 @@ open class SetupActivity : ComponentActivity() {
         internal const val EXTRA_CAPTURE_MODE = "capture_mode"
         internal const val EXTRA_REQUEST_ID = "request_id"
         private const val STATE_PENDING_CAPTURE = "pending_capture_state"
-        private const val STATE_CONSENT_IN_FLIGHT = "consent_in_flight"
         private const val STATE_CAPTURE_MODE = "capture_mode_state"
         private const val STATE_REQUEST_ID = "request_id_state"
         private const val STATE_CHILD_LAUNCHED = "child_launched"
         private const val STATE_AWAITING_SESSION = "awaiting_session"
-        private const val STATE_DEFERRED_CONSENT = "deferred_consent"
-        private const val STATE_DEFERRED_RESULT_CODE = "deferred_result_code"
-        private const val STATE_DEFERRED_DATA = "deferred_data"
     }
 }
