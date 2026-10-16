@@ -13,8 +13,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.raidenyn.screentranslator.R
 import com.raidenyn.screentranslator.capture.CaptureError
 import com.raidenyn.screentranslator.capture.CaptureResult
-import com.raidenyn.screentranslator.lens.IntentStarter
-import com.raidenyn.screentranslator.lens.LensLauncher
+import com.raidenyn.screentranslator.lens.fullscreenOptions
 import com.raidenyn.screentranslator.service.ScreenCaptureService
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
@@ -78,13 +77,14 @@ class CaptureActivity : ComponentActivity() {
     private fun launchLens(service: ScreenCaptureService, result: CaptureResult.Saved) {
         if (consumed || !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
         consumed = true
-        val launcher = LensLauncher(service.contentResolver, IntentStarter { intent, options ->
-            service.startActivity(intent, options)
-        })
         // v0.6.1 closed its Sidebar activity before the service launched Lens. Remove
         // this whole task (including the root), rather than leaving it available to
-        // ColorOS's source-task fallback through the calling process.
-        val launched = removeCaptureTask() && launcher.launch(result.uri)
+        // ColorOS's source-task fallback through the calling process. The fresh relay
+        // task then supplies the direct Lens request a real activity caller and result
+        // channel, matching the OEM screenshot-translation contract.
+        val relay = TranslateRelayActivity.intent(service, result.uri)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+        val launched = removeCaptureTask() && startRelay(service, relay)
         service.requests.acknowledge(requestId)
         if (launched) {
             setResult(Activity.RESULT_OK)
@@ -94,6 +94,13 @@ class CaptureActivity : ComponentActivity() {
         }
         finish()
         @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+    }
+
+    private fun startRelay(service: ScreenCaptureService, relay: Intent): Boolean = try {
+        service.startActivity(relay, fullscreenOptions())
+        true
+    } catch (_: Exception) {
+        false // The relay start was rejected; the capture task is already gone.
     }
 
     private fun removeCaptureTask(): Boolean {

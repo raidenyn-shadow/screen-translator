@@ -10,7 +10,6 @@ import android.net.Uri
 import android.view.ViewGroup
 import androidx.core.content.IntentCompat
 import androidx.test.core.app.ApplicationProvider
-import androidx.test.platform.app.InstrumentationRegistry
 import com.raidenyn.screentranslator.R
 import com.raidenyn.screentranslator.capture.CAPTURE_DELAY_MS
 import com.raidenyn.screentranslator.capture.CaptureResult
@@ -43,10 +42,8 @@ import org.robolectric.annotation.LooperMode
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowActivity
 import org.robolectric.shadows.ShadowAppTask
-import org.robolectric.shadows.ShadowInstrumentation
 import org.robolectric.shadows.ShadowLooper
 import org.robolectric.shadows.ShadowToast
-import org.robolectric.util.ReflectionHelpers
 import java.io.File
 import java.util.UUID
 
@@ -66,7 +63,6 @@ class CaptureActivityTest {
         boot?.controller?.destroy()
         boot = null
         testScope.cancel()
-        disableActivityChecks()
     }
 
     /** A ready session against this test's scope, booted at most once. */
@@ -116,24 +112,6 @@ class CaptureActivityTest {
         ShadowLooper.idleMainLooper()
     }
 
-    private fun enableActivityChecks() {
-        ReflectionHelpers.setField(
-            Shadow.extract<ShadowInstrumentation>(InstrumentationRegistry.getInstrumentation()),
-            "checkActivities",
-            true,
-        )
-    }
-
-    private fun disableActivityChecks() {
-        runCatching {
-            ReflectionHelpers.setField(
-                Shadow.extract<ShadowInstrumentation>(InstrumentationRegistry.getInstrumentation()),
-                "checkActivities",
-                false,
-            )
-        }
-    }
-
     @Test fun captureWindowIsTransparentWithoutSettingsContent() {
         val info = context.packageManager.getActivityInfo(ComponentName(context, CaptureActivity::class.java), 0)
         assertFalse(info.exported)
@@ -170,7 +148,7 @@ class CaptureActivityTest {
 
     @Test
     @Config(shadows = [OrderedAppTaskShadow::class])
-    fun screenshotHandoffRemovesOnlyItsEntireTaskBeforeLaunchingLens() {
+    fun screenshotHandoffRemovesOnlyItsEntireTaskBeforeStartingTheTranslateRelay() {
         val session = booted()
         val capture = resumedCapture("fullscreen")
         val manager = capture.get().getSystemService(ActivityManager::class.java)
@@ -180,16 +158,18 @@ class CaptureActivityTest {
 
         completePendingCapture(session)
 
-        val launch = shadow(capture.get()).nextStartedActivityForResult ?: error("no Lens handoff")
+        val launch = Shadows.shadowOf(app).nextStartedActivity ?: error("no relay handoff")
         val removedTask = Shadow.extract<OrderedAppTaskShadow>(captureTask)
         assertTrue(removedTask.isFinishedAndRemoved)
         assertNull(removedTask.activityAtRemoval)
         assertFalse(Shadows.shadowOf(unrelatedTask).isFinishedAndRemoved)
-        assertEquals(1, launch.options?.getInt("android.activity.windowingMode"))
-        assertEquals("com.google.android.apps.search.lens.LensShareEntryPointActivity", launch.intent.component?.className)
-        assertEquals(savedCaptureUri(), IntentCompat.getParcelableExtra(launch.intent, Intent.EXTRA_STREAM, Uri::class.java))
-        assertTrue(launch.intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
-        assertTrue(launch.intent.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
+        assertEquals(ComponentName(context, TranslateRelayActivity::class.java), launch.component)
+        assertEquals(
+            savedCaptureUri(),
+            IntentCompat.getParcelableExtra(launch, TranslateRelayActivity.EXTRA_IMAGE_URI, Uri::class.java),
+        )
+        assertTrue(launch.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
+        assertTrue(launch.flags and Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS != 0)
         assertTrue(capture.get().isFinishing)
     }
 
@@ -219,7 +199,7 @@ class CaptureActivityTest {
         assertEquals(emptyMap<String, CaptureResult>(), session.service.requests.results.value)
     }
 
-    @Test fun pausedActivityDefersLensUntilResume() {
+    @Test fun pausedActivityDefersRelayUntilResume() {
         val session = booted()
         val capture = resumedCapture("pausing")
         capture.pause()
@@ -230,9 +210,9 @@ class CaptureActivityTest {
 
         capture.resume()
         ShadowLooper.idleMainLooper()
-        val lens = shadow(capture.get()).nextStartedActivity ?: error("Lens was not started on resume")
-        assertEquals(Intent.ACTION_SEND, lens.action)
-        assertEquals(uri, IntentCompat.getParcelableExtra(lens, Intent.EXTRA_STREAM, Uri::class.java))
+        val relay = shadow(capture.get()).nextStartedActivity ?: error("relay was not started on resume")
+        assertEquals(ComponentName(context, TranslateRelayActivity::class.java), relay.component)
+        assertEquals(uri, IntentCompat.getParcelableExtra(relay, TranslateRelayActivity.EXTRA_IMAGE_URI, Uri::class.java))
         assertTrue(capture.get().isFinishing)
         assertEquals(emptyMap<String, CaptureResult>(), session.service.requests.results.value)
     }
@@ -245,9 +225,12 @@ class CaptureActivityTest {
 
         completePendingCapture(session)
 
-        val lens = shadow(reborn).nextStartedActivity ?: error("no Lens handoff")
-        assertEquals(Intent.ACTION_SEND, lens.action)
-        assertEquals(savedCaptureUri(), IntentCompat.getParcelableExtra(lens, Intent.EXTRA_STREAM, Uri::class.java))
+        val relay = shadow(reborn).nextStartedActivity ?: error("no relay handoff")
+        assertEquals(ComponentName(context, TranslateRelayActivity::class.java), relay.component)
+        assertEquals(
+            savedCaptureUri(),
+            IntentCompat.getParcelableExtra(relay, TranslateRelayActivity.EXTRA_IMAGE_URI, Uri::class.java),
+        )
         assertNull(shadow(reborn).nextStartedActivity)
         assertTrue(reborn.isFinishing)
         assertEquals(emptyMap<String, CaptureResult>(), session.service.requests.results.value)
@@ -328,17 +311,4 @@ class CaptureActivityTest {
         assertNull(shadow(orphaned).peekNextStartedActivity())
     }
 
-    @Test fun lensMissingShowsLaunchFailed() {
-        enableActivityChecks()
-        val session = booted()
-        val capture = resumedCapture("nolens")
-
-        completePendingCapture(session)
-
-        assertEquals(context.getString(R.string.error_launch_failed), ShadowToast.getTextOfLatestToast())
-        val failed = capture.get()
-        assertTrue(failed.isFinishing)
-        assertEquals(Activity.RESULT_CANCELED, shadow(failed).resultCode)
-        assertEquals(emptyMap<String, CaptureResult>(), session.service.requests.results.value)
-    }
 }

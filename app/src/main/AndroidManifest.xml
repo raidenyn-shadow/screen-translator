@@ -33,6 +33,12 @@
             android:exported="false"
             android:theme="@style/Theme.ScreenTranslator.Capture" />
 
+        <activity
+            android:name=".ui.TranslateRelayActivity"
+            android:exported="false"
+            android:theme="@style/Theme.ScreenTranslator.Capture"
+            android:excludeFromRecents="true" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"
