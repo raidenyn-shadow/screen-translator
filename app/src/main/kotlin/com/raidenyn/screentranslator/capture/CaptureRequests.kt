@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,17 +49,21 @@ internal class CaptureRequests(
 
     /**
      * Starts one pipeline for [id]; false while a request is in flight or a result is retained.
-     * Job completion, not a pipeline finally, hands the guard back: a job canceled before it
-     * first runs never executes its body, and a late completion must not clear an
-     * already-replaced request's guard.
+     * The job is created lazily and started only after the guard is assigned: with an immediate
+     * dispatcher and a zero delay the pipeline can reach publish inside the start call, before
+     * any owner existed, and would drop its outcome. Job completion, not a pipeline finally,
+     * hands the guard back: a job canceled before it first runs never executes its body, and a
+     * late completion must not clear an already-replaced request's guard.
      */
     fun request(id: String): Boolean {
-        synchronized(lock) {
+        val job = synchronized(lock) {
             if (closed || active != null || resultsState.value.isNotEmpty()) return false
-            val job = scope.launch { run(id) }
+            val job = scope.launch(start = CoroutineStart.LAZY) { run(id) }
             active = ActiveRequest(id, job)
             job.invokeOnCompletion { synchronized(lock) { if (active?.job === job) active = null } }
+            job
         }
+        job.start()
         return true
     }
 

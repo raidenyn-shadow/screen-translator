@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -246,5 +248,24 @@ class CaptureRequestsTest {
         testScope.advanceUntilPipelineIdle()
         assertEquals(emptyMap<String, CaptureResult>(), requests.results.value)
         assertTrue(taker.handedOut.single().isRecycled)
+    }
+
+    /**
+     * With an immediate dispatcher and a zero delay the pipeline runs to completion inside
+     * request() itself: the guard must already be assigned when publish is reached, or the
+     * outcome is dropped even though request returned true.
+     */
+    @Test
+    fun zeroDelayImmediateDispatcherStillPublishesFailure() {
+        val taker = RecordingTaker(failure = RuntimeException("frame extraction failed"))
+        val requests = CaptureRequests(
+            taker, store, CoroutineScope(Dispatchers.Unconfined), delayMs = 0,
+        )
+
+        assertTrue(requests.request("a"))
+        assertEquals(mapOf("a" to CaptureResult.Failed(CaptureError.ScreenshotFailed)), requests.results.value)
+        assertFalse(requests.request("a"))
+        requests.acknowledge("a")
+        assertEquals(emptyMap<String, CaptureResult>(), requests.results.value)
     }
 }
