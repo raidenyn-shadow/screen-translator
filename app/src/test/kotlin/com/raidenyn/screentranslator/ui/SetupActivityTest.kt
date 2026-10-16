@@ -1,5 +1,6 @@
 package com.raidenyn.screentranslator.ui
 
+import android.content.Intent
 import android.os.Looper
 import com.raidenyn.screentranslator.capture.CaptureOrchestrator
 import com.raidenyn.screentranslator.capture.CaptureStore
@@ -72,6 +73,21 @@ class SetupActivityTest {
         assertTrue(controller.get().isFinishing)
         scope.testScheduler.runCurrent()
         assertEquals(1, dispatches)
+        controller.pause().stop().destroy()
+    }
+
+    @Test fun settingsModeStaysOpenWhenTheServiceConnects() {
+        val controller = Robolectric.buildActivity(SetupActivity::class.java,
+            Intent().putExtra(SetupActivity.EXTRA_PENDING_CAPTURE, false)).create().start().resume()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertFalse(controller.get().isFinishing)
+
+        connectService()
+        shadowOf(Looper.getMainLooper()).idle()
+
+        assertFalse(controller.get().isFinishing)
+        scope.testScheduler.runCurrent()
+        assertEquals(0, dispatches)
         controller.pause().stop().destroy()
     }
 

@@ -1,6 +1,5 @@
 package com.raidenyn.screentranslator.ui
 
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -17,6 +16,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.TestScope
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -47,7 +47,7 @@ class TrampolineActivityTest {
         testScope.cancel()
     }
 
-    /** The next activity [trampoline] started, or null when it started nothing. */
+    /** The next activity [TrampolineActivity] started, or null when it started nothing. */
     private fun nextStartedBy(trampoline: TrampolineActivity): Intent? =
         shadowOf(trampoline).nextStartedActivityForResult?.intent
 
@@ -76,6 +76,9 @@ class TrampolineActivityTest {
             delayer = { dispatches.add(it); gate.await() },
         )
 
+    private fun sidebarIntent(): Intent =
+        Intent(Intent.ACTION_MAIN).putExtra("from_package", "com.coloros.smartsidebar")
+
     private class RecordingTaker : ScreenshotTaker {
         var calls = 0
         override suspend fun take(): Bitmap {
@@ -90,23 +93,24 @@ class TrampolineActivityTest {
     }
 
     @Test
-    fun noServiceRoutesToSetup() {
+    fun sidebarTapWithoutServiceKeepsSettingsInTheLauncherActivity() {
         assertNull(ScreenCaptureService.instance)   // the accessibility service is not running
 
-        val trampoline = Robolectric.buildActivity(TrampolineActivity::class.java).create().get()
+        val controller = Robolectric.buildActivity(TrampolineActivity::class.java, sidebarIntent()).create()
+        val trampoline = controller.get()
 
-        assertTrue(trampoline.isFinishing)
-        val started = nextStartedBy(trampoline)
-        assertEquals(ComponentName(context, SetupActivity::class.java), started?.component)
+        assertFalse(trampoline.isFinishing)
+        assertNull(nextStartedBy(trampoline))
+        controller.destroy()
     }
 
     @Test
-    fun servicePresentDispatches() {
+    fun sidebarTapWithServiceDispatches() {
         val service = attachedService()
         val dispatches = mutableListOf<Long>()
         ReflectionHelpers.setField(service, "realOrchestrator", recordingOrchestrator(dispatches))
 
-        val trampoline = Robolectric.buildActivity(TrampolineActivity::class.java).create().get()
+        val trampoline = Robolectric.buildActivity(TrampolineActivity::class.java, sidebarIntent()).create().get()
 
         assertTrue(trampoline.isFinishing)
         assertNull(nextStartedBy(trampoline))               // the service is live: no setup screen
@@ -115,7 +119,7 @@ class TrampolineActivityTest {
     }
 
     @Test
-    fun inFlightTapDoesNothing() {
+    fun duplicateSidebarTapWhileCapturingDoesNothing() {
         val service = attachedService()
         val dispatches = mutableListOf<Long>()
         val orchestrator = recordingOrchestrator(dispatches)
@@ -124,10 +128,38 @@ class TrampolineActivityTest {
         assertTrue(orchestrator.tryDispatch())             // a capture is already in flight
         testScope.testScheduler.advanceUntilIdle()          // it parks at the gate, holding the in-flight guard
 
-        val trampoline = Robolectric.buildActivity(TrampolineActivity::class.java).create().get()
+        val trampoline = Robolectric.buildActivity(TrampolineActivity::class.java, sidebarIntent()).create().get()
 
         assertTrue(trampoline.isFinishing)
         assertNull(nextStartedBy(trampoline))               // duplicate tap: no setup screen either
         assertEquals(listOf(CAPTURE_DELAY_MS), dispatches)  // and it dispatched no second capture
+    }
+
+    @Test
+    fun iconTapWithoutServiceOpensPlainSettings() {
+        assertNull(ScreenCaptureService.instance)   // the accessibility service is not running
+
+        val controller = Robolectric.buildActivity(TrampolineActivity::class.java).create()
+        val trampoline = controller.get()
+
+        assertFalse(trampoline.isFinishing)
+        assertNull(nextStartedBy(trampoline))
+        controller.destroy()
+    }
+
+    @Test
+    fun iconTapWithServiceOpensSettingsInsteadOfCapturing() {
+        val service = attachedService()
+        val dispatches = mutableListOf<Long>()
+        ReflectionHelpers.setField(service, "realOrchestrator", recordingOrchestrator(dispatches))
+
+        val controller = Robolectric.buildActivity(TrampolineActivity::class.java).create()
+        val trampoline = controller.get()
+
+        assertFalse(trampoline.isFinishing)
+        assertNull(nextStartedBy(trampoline))
+        testScope.testScheduler.advanceUntilIdle()
+        assertEquals(emptyList<Long>(), dispatches)   // the icon tap must not start a capture
+        controller.destroy()
     }
 }

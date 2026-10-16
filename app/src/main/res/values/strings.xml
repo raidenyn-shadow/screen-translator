@@ -14,6 +14,6 @@
     <string name="setup_enable_service">Enable capture service</string>
     <string name="setup_battery_settings">Battery settings</string>
     <string name="setup_how_to_title">How to use it</string>
-    <string name="setup_how_to">1. Add the app to Smart Sidebar (Settings → Smart Sidebar → customize).\n2. Pin/lock the app in recents so ColorOS keeps it running.\n3. Enable the capture service once. A sidebar tap then captures the screen, opens Google Lens, and selects Translate automatically.</string>
+    <string name="setup_how_to">1. Add the app to Smart Sidebar (Settings → Smart Sidebar → customize).\n2. Pin/lock the app in recents so ColorOS keeps it running.\n3. Enable the capture service once. A sidebar tap then captures the screen, opens Google Lens, and selects Translate automatically.\n4. Opening the app\'s icon from the home screen or app drawer shows this settings page.</string>
     <string name="service_accessibility_description">Captures your screen and opens it in Google Lens. After each capture, inspects Lens controls for up to 10 seconds and selects Translate at most once.</string>
 </resources>

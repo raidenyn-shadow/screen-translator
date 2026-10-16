@@ -31,19 +31,67 @@ APK: `app/build/outputs/apk/debug/app-debug.apk`.
    from battery optimization. Pin/lock it in recents if ColorOS stops the service.
 2. Tap **Enable capture service**, then enable Screen Translator in Android's
    Accessibility settings. After an update, turn the service off and on if Android
-   has not refreshed its capabilities. Returning to the app starts a capture.
+   has not refreshed its capabilities.
 3. Add Screen Translator to **Smart Sidebar** in Settings → Smart Sidebar →
    customize.
 
-The setup screen appears when the accessibility service is off or reconnecting.
-When the service becomes ready while setup is in the foreground, setup closes and
-the pending capture proceeds automatically. Opening the app's icon performs the
-same capture action as a sidebar tap once the service is ready.
+## Launch behavior
+
+- A **Smart Sidebar** tap captures the screen and translates it. If the tap
+  arrives while the service is off or reconnecting, setup opens to wait for the
+  service, then closes and the pending capture proceeds automatically.
+- Opening the app's **icon** from the home screen or app drawer opens the setup
+  screen as a settings page. It stays open even when the service is ready.
+
+Sidebar launches are recognized through the `from_package` extra ColorOS adds
+(observed as `com.coloros.smartsidebar` on a OnePlus PYB110 running Android 17).
+Launches without that marker — other launchers, other OS versions — open
+settings instead of translating. If sidebar taps on your phone open settings,
+report the phone model and OS version so detection can be extended.
+
+The launcher retains the settings page in its own `singleTask` activity and
+handles subsequent launches through `onNewIntent`. This is important on ColorOS:
+otherwise a sidebar tap can simply bring an existing settings task forward and
+skip the source-routing code.
+
+### Keeping accessibility access enabled
+
+Android saves the accessibility-service selection; a normal process restart or
+device reboot should not require granting access again. A disconnected service
+is not necessarily a revoked grant: setup waits for Android to reconnect it.
+
+**Force stop is different.** Android deliberately removes a force-stopped app's
+services from the saved enabled-accessibility-services list. Opening the app
+again cannot restore that selection through ordinary app APIs; enable Screen
+Translator again in Accessibility settings. Uninstalling and reinstalling also
+requires enabling the service again. For updates, install over the existing app
+with the same package name and signing key rather than uninstalling first.
+
+For everyday use on ColorOS/OnePlus:
+
+- Avoid **Force stop** and do not turn off the service in Accessibility settings
+  unless you intend to disable it.
+- Allow background activity and auto-launch where those options are available in
+  the phone's app/battery settings, and exempt the app from battery optimization.
+  These can reduce vendor background shutdowns; they do not override Force stop.
+- If accessibility is still enabled but Android reports the service as not
+  working, try toggling it off and on once to reconnect it.
+
+There is no ordinary app permission that makes accessibility access permanent
+across Force stop, explicit disabling, or uninstall. Screen Translator uses
+accessibility for both screenshots and Lens interaction, so it does not need
+storage, overlay, camera, or per-session MediaProjection permission. The battery
+settings link is an optional reliability measure, not a capture permission.
+
+Platform reference: Android's
+[`AccessibilityManagerService.onPackagesForceStoppedLocked`](https://github.com/aosp-mirror/platform_frameworks_base/blob/master/services/accessibility/java/com/android/server/accessibility/AccessibilityManagerService.java)
+removes the affected services and persists the updated enabled-services list.
 
 ## Usage
 
 Tap Screen Translator in Smart Sidebar and let Lens open. The app automatically
 activates Translate once; no gallery selection or extra Translate tap is needed.
+Opening the app's icon shows the setup/settings screen instead.
 
 The accessibility service:
 
