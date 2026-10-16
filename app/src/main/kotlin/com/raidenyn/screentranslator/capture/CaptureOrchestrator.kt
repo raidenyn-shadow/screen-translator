@@ -11,11 +11,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 /** Wait between the request tap and the screenshot, letting the sidebar dismissal animation finish. */
 const val CAPTURE_DELAY_MS = 400L
 
-/** Captures the visible display as a software bitmap. */
-fun interface ScreenshotTaker {
-    suspend fun take(): Bitmap
-}
-
 /** Which step of the capture pipeline failed, mapped one-to-one onto a user-facing toast. */
 sealed interface CaptureError {
     /** The screenshot step is impossible on this device: its Android version predates the API. */
