@@ -24,6 +24,7 @@ class CaptureActivity : ComponentActivity() {
     private lateinit var requestId: String
     private var requested = false
     private var consumed = false
+    private var owner: ScreenCaptureService? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -36,6 +37,7 @@ class CaptureActivity : ComponentActivity() {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 active = ::cancel
                 ScreenCaptureService.connection.collectLatest { service ->
+                    owner = service
                     if (service == null) abandon() else {
                         request(service)
                         service.requests.results.collect { request(service) }
@@ -46,8 +48,13 @@ class CaptureActivity : ComponentActivity() {
     }
 
     override fun onPause() {
-        active = null
         super.onPause()
+    }
+
+    override fun onDestroy() {
+        if (!isChangingConfigurations && !consumed) cancel()
+        if (active != null) active = null
+        super.onDestroy()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -91,7 +98,7 @@ class CaptureActivity : ComponentActivity() {
     }
 
     private fun cancel() {
-        if (::requestId.isInitialized && !consumed) ScreenCaptureService.connection.value?.requests?.cancel(requestId)
+        if (::requestId.isInitialized && !consumed) owner?.requests?.cancel(requestId)
         abandon()
     }
 

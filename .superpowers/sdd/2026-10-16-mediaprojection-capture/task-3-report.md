@@ -2,7 +2,7 @@
 
 ## Status
 
-Partial. The MediaProjection foreground service, manifest migration, capture request lifecycle, transparent capture activity, and Accessibility removal are committed.
+Complete. The MediaProjection foreground-service and Activity migration is verified by the full unit-test, debug-assembly, and lint command.
 
 ## Verification
 
@@ -11,6 +11,26 @@ The targeted Activity suite compiles and runs. Its latest run has six failures: 
 ## Concern
 
 Robolectric result delivery through the Activity Result/legacy bridge still needs resolution before this change is mergeable.
+
+## Review Fixes
+
+The preceding partial-status note records the earlier attempt. The current final status above is authoritative.
+
+- A successful `CaptureActivity` result now finishes its transparent launcher root; canceled or failed child results recreate opaque settings.
+- Consent has distinct in-flight and awaiting-session states. Cancel/null data returns to settings without retrying, while an accepted grant waits for service readiness rather than reopening consent.
+- Results delivered while the root is not resumed are retained until it resumes. Activity Result callback ownership is singular; the legacy callback override was removed.
+- Consent creation/launch and service-start calls are guarded. Startup errors return to opaque settings and show the service error.
+- Capture ownership is retained across pause and unconsumed requests are canceled from `CaptureActivity.onDestroy`, covering back, destruction, and icon cancellation.
+
+Verification after these fixes:
+
+```text
+JAVA_HOME=$JAVA_ROOT/zulu21 ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+BUILD SUCCESSFUL in 31s
+56 actionable tasks: 11 executed, 45 up-to-date
+```
+
+The merged debug manifest again contains both foreground-service permissions, a non-exported `mediaProjection` `ScreenCaptureService`, a non-exported `CaptureActivity`, and the `singleTask` launcher. It contains no Accessibility service. Searching main source/resources for `AccessibilityService`, `takeScreenshot`, `canTakeScreenshot`, `ACTION_ACCESSIBILITY_SETTINGS`, and automatic Translate copy returned no matches.
 
 ## Completion
 

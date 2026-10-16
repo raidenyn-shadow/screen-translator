@@ -6,6 +6,7 @@ import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -27,14 +28,15 @@ open class SetupActivity : ComponentActivity() {
     private var captureMode = false
     private var requestId: String? = null
     private var childLaunched = false
-    private var resumed = false
+    private var awaitingSession = false
+    private var deferredConsent: Pair<Int, Intent?>? = null
 
     private val consent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         consentResult(result.resultCode, result.data)
     }
 
-    private val capture = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        if (!isFinishing) returnToSettings()
+    private val capture = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) finish() else if (!isFinishing) returnToSettings()
     }
 
     protected open fun captureRequested(intent: Intent): Boolean =
@@ -49,6 +51,7 @@ open class SetupActivity : ComponentActivity() {
         requestId = savedInstanceState?.getString(STATE_REQUEST_ID)
             ?: intent.getStringExtra(EXTRA_REQUEST_ID)
         childLaunched = savedInstanceState?.getBoolean(STATE_CHILD_LAUNCHED) ?: false
+        awaitingSession = savedInstanceState?.getBoolean(STATE_AWAITING_SESSION) ?: false
         setTheme(if (captureMode) R.style.Theme_ScreenTranslator_Capture else R.style.Theme_ScreenTranslator_Setup)
         super.onCreate(savedInstanceState)
         if (!captureMode) {
@@ -68,21 +71,23 @@ open class SetupActivity : ComponentActivity() {
                 }
             }
         }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                ScreenCaptureService.startupError.collect { error ->
+                    if (error != null && (pendingCapture || awaitingSession)) failToSettings(error)
+                }
+            }
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        resumed = true
+        deferredConsent?.let { (code, data) -> deferredConsent = null; consentResult(code, data) }
         when {
             captureMode && !childLaunched -> launchCapture()
-            !captureMode && pendingCapture && ScreenCaptureService.connection.value == null && !consentInFlight -> requestConsent()
+            !captureMode && pendingCapture && ScreenCaptureService.connection.value == null && !consentInFlight && !awaitingSession -> requestConsent()
             !captureMode && pendingCapture -> beginCapture()
         }
-    }
-
-    override fun onPause() {
-        resumed = false
-        super.onPause()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -98,41 +103,40 @@ open class SetupActivity : ComponentActivity() {
         if (ScreenCaptureService.connection.value != null) beginCapture() else if (!consentInFlight) requestConsent()
     }
 
-    @Deprecated("Activity Result API callback compatibility")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        if (consentInFlight) consentResult(resultCode, data)
-        super.onActivityResult(requestCode, resultCode, data)
-    }
-
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean(STATE_PENDING_CAPTURE, pendingCapture)
         outState.putBoolean(STATE_CONSENT_IN_FLIGHT, consentInFlight)
         outState.putBoolean(STATE_CAPTURE_MODE, captureMode)
         outState.putString(STATE_REQUEST_ID, requestId)
         outState.putBoolean(STATE_CHILD_LAUNCHED, childLaunched)
+        outState.putBoolean(STATE_AWAITING_SESSION, awaitingSession)
         super.onSaveInstanceState(outState)
     }
 
     private fun requestConsent() {
         if (consentInFlight) return
         consentInFlight = true
-        val manager = getSystemService(MediaProjectionManager::class.java)
-        val intent = if (Build.VERSION.SDK_INT >= 34) {
-            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
-        } else {
-            manager.createScreenCaptureIntent()
+        try {
+            val manager = getSystemService(MediaProjectionManager::class.java)
+            val intent = if (Build.VERSION.SDK_INT >= 34) {
+                manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+            } else manager.createScreenCaptureIntent()
+            consent.launch(intent)
+        } catch (_: Throwable) {
+            failToSettings(getString(R.string.error_session_failed))
         }
-        consent.launch(intent)
     }
 
     private fun consentResult(resultCode: Int, data: Intent?) {
         if (!consentInFlight) return
-        consentInFlight = false
-        if (resultCode == Activity.RESULT_OK && data != null &&
-            lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
-        ) {
-            ScreenCaptureService.start(this, resultCode, data)
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
+            deferredConsent = resultCode to data
+            return
         }
+        consentInFlight = false
+        if (resultCode != Activity.RESULT_OK || data == null) { returnToSettings(); return }
+        awaitingSession = true
+        try { ScreenCaptureService.start(this, resultCode, data) } catch (_: Throwable) { failToSettings(getString(R.string.error_session_failed)) }
     }
 
     private fun beginCapture() {
@@ -159,9 +163,15 @@ open class SetupActivity : ComponentActivity() {
         pendingCapture = false
         requestId = null
         childLaunched = false
+        awaitingSession = false
         intent.removeExtra(EXTRA_CAPTURE_MODE)
         intent.removeExtra(EXTRA_REQUEST_ID)
         recreate()
+    }
+
+    private fun failToSettings(message: String) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+        returnToSettings()
     }
 
     companion object {
@@ -173,5 +183,6 @@ open class SetupActivity : ComponentActivity() {
         private const val STATE_CAPTURE_MODE = "capture_mode_state"
         private const val STATE_REQUEST_ID = "request_id_state"
         private const val STATE_CHILD_LAUNCHED = "child_launched"
+        private const val STATE_AWAITING_SESSION = "awaiting_session"
     }
 }
