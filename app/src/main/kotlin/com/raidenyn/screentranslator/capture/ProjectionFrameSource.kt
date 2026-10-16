@@ -15,9 +15,8 @@ import android.view.Display
 import android.view.Surface
 import android.view.WindowManager
 import kotlinx.coroutines.CancellableContinuation
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.ByteBuffer
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
@@ -33,7 +32,7 @@ internal const val READER_MAX_IMAGES = 2
 /** Full-display geometry a reader and virtual display are sized from. */
 internal data class ScreenGeometry(val width: Int, val height: Int, val densityDpi: Int)
 
-/** The RGBA_8888 plane of one captured frame, exposed the way [ImageReader] delivers it. */
+/** The RGBA_8888 plane of one captured frame. */
 internal class RgbaPlane(val buffer: ByteBuffer, val pixelStride: Int, val rowStride: Int)
 
 /** One captured frame; every instance must be closed exactly once. */
@@ -67,11 +66,8 @@ internal interface ProjectionEvents {
 }
 
 /**
- * The reader/display factory seam: everything the frame source needs from the framework.
- * Production adapts a real MediaProjection; tests inject fakes, because Robolectric cannot
- * shadow MediaProjection, ImageReader or VirtualDisplay. [executor] serializes all source
- * state, so a fake inline executor keeps tests single-threaded and deterministic while
- * production runs a dedicated HandlerThread.
+ * Reader/display factory seam over the capture framework: production adapts a real
+ * MediaProjection, tests inject fakes, and [executor] serializes all source state.
  */
 internal interface ProjectionEnvironment {
     val executor: Executor
@@ -85,13 +81,11 @@ internal interface ProjectionEnvironment {
 }
 
 /**
- * Screenshot taker over one consented MediaProjection: a single auto-mirroring virtual
- * display whose ImageReader keeps at most [READER_MAX_IMAGES] frames. Frames arriving without
- * a request are drained and closed so the producer never stalls; [take] first drops
- * everything queued, then waits for a frame delivered after the request and converts it to a
- * software bitmap. Geometry changes replace only the reader/surface and resize the display.
- * All state is confined to the environment's executor; revocation or [close] tears it down
- * exactly once, and only revocation signals [onStopped].
+ * Screenshot taker over one consented MediaProjection: a single auto-mirroring display
+ * whose reader is drained while idle. [take] drops queued frames, waits for one delivered
+ * after the request and converts it to a software bitmap, failing on its own timeout.
+ * Geometry changes replace the reader but reuse the display; revocation and [close]
+ * converge on one cleanup that signals [onStopped] only for revocation.
  */
 internal class ProjectionFrameSource internal constructor(
     private val environment: ProjectionEnvironment,
@@ -108,15 +102,12 @@ internal class ProjectionFrameSource internal constructor(
     private val closed = AtomicBoolean(false)
     private val stoppedSignaled = AtomicBoolean(false)
 
-    // State confined to the environment's executor:
     private var geometry = environment.geometry()
     private var reader: FrameReader? = null
     private var display: VirtualScreen? = null
     private var pending: PendingCapture? = null
 
     init {
-        // Registration precedes reader/display creation so revocation or a resize is never
-        // missed, and reader identity doubles as the generation of replaced readers.
         environment.register(object : ProjectionEvents {
             override fun onGeometryChanged(width: Int, height: Int) =
                 executor.execute { resize(width, height) }
@@ -128,44 +119,33 @@ internal class ProjectionFrameSource internal constructor(
 
     override suspend fun take(): Bitmap {
         check(!closed.get()) { "frame source is closed" }
-        return try {
-            withTimeout(timeoutMs) {
-                suspendCancellableCoroutine { continuation ->
-                    val slot = PendingCapture(continuation)
-                    // Cancellation is registered before arming, so a request cancelled while
-                    // its arm task is still queued can never arm a dead slot.
-                    continuation.invokeOnCancellation { executor.execute { cancelSlot(slot) } }
-                    executor.execute { arm(slot) }
-                }
+        val frame = withTimeoutOrNull(timeoutMs) {
+            suspendCancellableCoroutine { continuation ->
+                val slot = PendingCapture(continuation)
+                continuation.invokeOnCancellation { executor.execute { cancelSlot(slot) } }
+                executor.execute { arm(slot) }
             }
-        } catch (e: TimeoutCancellationException) {
-            // A frame timeout is a capture failure for the caller, not a cancellation of
-            // the caller's whole pipeline.
-            throw IllegalStateException("no fresh frame within $timeoutMs ms", e)
         }
+        return frame ?: throw IllegalStateException("no fresh frame within $timeoutMs ms")
     }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         executor.execute { teardown() }
-        // Production's release drains the state thread's queue before quitting, so the
-        // teardown above runs before the thread exits.
         environment.release()
     }
 
-    // -- executor-confined state --------------------------------------------------
-
     private fun start() {
         if (closed.get()) return
+        var created: FrameReader? = null
         try {
-            val created = environment.createReader(geometry.width, geometry.height, READER_MAX_IMAGES)
-            created.onImageAvailable { executor.execute { onFrame(created) } }
-            reader = created
-            display = environment.attachDisplay(created, geometry)
-        } catch (t: Throwable) {
-            // A failed startup must neither leak its half nor kill the state thread;
-            // captures then time out while the owning service decides the session is over.
-            runCatching { reader?.close() }
+            val fresh = environment.createReader(geometry.width, geometry.height, READER_MAX_IMAGES)
+            created = fresh
+            fresh.onImageAvailable { executor.execute { onFrame(fresh) } }
+            reader = fresh
+            display = environment.attachDisplay(fresh, geometry)
+        } catch (_: Throwable) {
+            runCatching { created?.close() }
             reader = null
             display = null
         }
@@ -181,8 +161,6 @@ internal class ProjectionFrameSource internal constructor(
             slot.fail(IllegalStateException("another capture is already pending"))
             return
         }
-        // Frames queued before the request show the consent or sidebar UI: drop them and
-        // wait for one produced after this point.
         while (true) {
             val queued = reader?.acquireLatestImage() ?: break
             queued.close()
@@ -191,28 +169,24 @@ internal class ProjectionFrameSource internal constructor(
     }
 
     private fun cancelSlot(slot: PendingCapture) {
-        // Only the matching slot may be freed: a late cancellation of an earlier request
-        // must never release the next request's slot.
         if (pending === slot) pending = null
     }
 
     private fun onFrame(from: FrameReader) {
-        // reader.close() unregisters production listeners, but a native callback can still
-        // be in flight; acquiring from a closed reader throws instead of returning.
         val image = try {
             from.acquireLatestImage()
-        } catch (e: IllegalStateException) {
+        } catch (_: IllegalStateException) {
             return
         } ?: return
         try {
-            if (closed.get() || from !== reader) return   // teardown or replaced reader: inert
-            val slot = pending ?: return                  // idle frame: nothing requested it
+            if (closed.get() || from !== reader) return
+            val slot = pending ?: return
             pending = null
             try {
                 val plane = image.plane
                 slot.complete(rgbaToBitmap(plane.buffer, image.width, image.height, plane.pixelStride, plane.rowStride))
             } catch (t: Throwable) {
-                slot.fail(t)   // conversion failures must neither hang the slot nor kill the thread
+                slot.fail(t)
             }
         } finally {
             image.close()
@@ -221,25 +195,25 @@ internal class ProjectionFrameSource internal constructor(
 
     private fun resize(width: Int, height: Int) {
         if (closed.get()) return
+        val screen = display
+        if (screen == null) {
+            geometry = ScreenGeometry(width, height, geometry.densityDpi)
+            return
+        }
         if (width == geometry.width && height == geometry.height) return
         val densityDpi = geometry.densityDpi
         val old = reader
-        val screen = display
         var fresh: FrameReader? = null
         val swapped = try {
             val created = environment.createReader(width, height, READER_MAX_IMAGES)
             fresh = created
             created.onImageAvailable { executor.execute { onFrame(created) } }
-            // Detach, resize, then re-surface the single display: the session design forbids
-            // a second virtual display per consent token. An armed capture keeps waiting on
-            // the replacement reader's first frame.
-            screen?.clearSurface()
-            screen?.resize(width, height, densityDpi)
-            screen?.setSurface(created)
+            screen.clearSurface()
+            screen.resize(width, height, densityDpi)
+            screen.setSurface(created)
             true
-        } catch (t: Throwable) {
-            // Keep serving from the previous reader; the next geometry change retries.
-            if (old != null) runCatching { screen?.setSurface(old) }
+        } catch (_: Throwable) {
+            if (old != null) runCatching { screen.setSurface(old) }
             fresh?.close()
             false
         }
@@ -254,8 +228,6 @@ internal class ProjectionFrameSource internal constructor(
         if (!closed.compareAndSet(false, true)) return
         teardown()
         environment.release()
-        // The service hears about unexpected stops exactly once; a user-initiated close
-        // knows already and must never be signalled.
         if (stoppedSignaled.compareAndSet(false, true)) onStopped()
     }
 
@@ -266,7 +238,6 @@ internal class ProjectionFrameSource internal constructor(
         display = null
         reader = null
         pending = null
-        // The display stops producing before its consumer buffers are released.
         screen?.release()
         current?.close()
         slot?.fail(IllegalStateException("projection stopped"))
@@ -280,11 +251,7 @@ internal class ProjectionFrameSource internal constructor(
     }
 }
 
-/**
- * Production [ProjectionEnvironment]: the real projection's ImageReader, VirtualDisplay,
- * platform callbacks and the dedicated state HandlerThread. Robolectric cannot drive these
- * framework paths, so only the pinned public constructor ever builds it.
- */
+/** Production [ProjectionEnvironment] over a real MediaProjection and a state HandlerThread. */
 private class MediaProjectionEnvironment(
     private val context: Context,
     private val projection: MediaProjection,
@@ -298,7 +265,6 @@ private class MediaProjectionEnvironment(
     override val executor: Executor = Executor { stateHandler.post(it) }
 
     override fun geometry(): ScreenGeometry {
-        // Maximum metrics cover the full display, not the small translucent activity window.
         val bounds = context.getSystemService(WindowManager::class.java)!!.maximumWindowMetrics.bounds
         return ScreenGeometry(bounds.width(), bounds.height(), context.resources.displayMetrics.densityDpi)
     }
@@ -322,8 +288,6 @@ private class MediaProjectionEnvironment(
     }
 
     override fun register(events: ProjectionEvents) {
-        // API 34+ reports captured-content resizes through the projection itself; API 30–33
-        // has no such callback and re-reads the metrics when the mirrored display changes.
         val callback = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             object : MediaProjection.Callback() {
                 override fun onCapturedContentResize(width: Int, height: Int) =
@@ -363,11 +327,10 @@ private class MediaProjectionEnvironment(
         }
         displayListener = null
         projection.stop()
-        stateThread.quitSafely()   // delivers queued state tasks before the thread exits
+        stateThread.quitSafely()
     }
 }
 
-/** [FrameReader] over a real [ImageReader], delivering frames on [handler]. */
 private class ImageReaderFrameReader(
     private val reader: ImageReader,
     private val handler: Handler,
@@ -384,7 +347,6 @@ private class ImageReaderFrameReader(
     override fun close() = reader.close()
 }
 
-/** [FrameImage] over one real frame; the source closes it in a finally. */
 private class ImageFrame(private val image: Image) : FrameImage {
     override val width get() = image.width
     override val height get() = image.height
