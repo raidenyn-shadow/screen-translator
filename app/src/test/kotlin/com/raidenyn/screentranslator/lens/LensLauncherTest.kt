@@ -20,7 +20,7 @@ class LensLauncherTest {
 
     @Test fun sharesScreenshotThroughTheDeviceVerifiedEntryPoint() {
         val intents = mutableListOf<Intent>()
-        val launcher = LensLauncher(resolver, IntentStarter { intents.add(it) })
+        val launcher = LensLauncher(resolver, IntentStarter { intent, _ -> intents.add(intent) })
 
         assertEquals(true, launcher.launch(uri))
         val intent = intents.single()
@@ -36,7 +36,7 @@ class LensLauncherTest {
 
     @Test fun missingLensReportsFailureInsteadOfLaunchingUnrelatedFallbacks() {
         var attempts = 0
-        val launcher = LensLauncher(resolver, IntentStarter {
+        val launcher = LensLauncher(resolver, IntentStarter { _, _ ->
             attempts++
             throw ActivityNotFoundException("missing Lens")
         })
@@ -45,7 +45,7 @@ class LensLauncherTest {
     }
 
     @Test fun inaccessibleLensReportsFailure() {
-        val launcher = LensLauncher(resolver, IntentStarter { throw SecurityException("not exported") })
+        val launcher = LensLauncher(resolver, IntentStarter { _, _ -> throw SecurityException("not exported") })
         assertEquals(false, launcher.launch(uri))
     }
 }

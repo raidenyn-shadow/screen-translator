@@ -77,7 +77,10 @@ class CaptureActivity : ComponentActivity() {
     private fun launchLens(service: ScreenCaptureService, result: CaptureResult.Saved) {
         if (consumed || !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
         consumed = true
-        if (LensLauncher(contentResolver, IntentStarter(::startActivity)).launch(result.uri)) {
+        val launcher = LensLauncher(contentResolver, IntentStarter { intent, options ->
+            startActivity(intent, options)
+        })
+        if (launcher.launch(result.uri)) {
             service.requests.acknowledge(requestId)
             setResult(Activity.RESULT_OK)
         } else {

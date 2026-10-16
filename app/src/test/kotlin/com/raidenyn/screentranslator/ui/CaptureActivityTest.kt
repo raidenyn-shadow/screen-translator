@@ -156,6 +156,21 @@ class CaptureActivityTest {
         assertNull(shadow(root.get()).peekNextStartedActivityForResult())
     }
 
+    @Test fun screenshotHandoffRequestsFullscreenLens() {
+        val session = booted()
+        val capture = resumedCapture("fullscreen")
+
+        completePendingCapture(session)
+
+        val launch = shadow(capture.get()).nextStartedActivityForResult ?: error("no Lens handoff")
+        assertEquals(1, launch.options?.getInt("android.activity.windowingMode"))
+        assertEquals("com.google.android.apps.search.lens.LensShareEntryPointActivity", launch.intent.component?.className)
+        assertEquals(savedCaptureUri(), IntentCompat.getParcelableExtra(launch.intent, Intent.EXTRA_STREAM, Uri::class.java))
+        assertTrue(launch.intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
+        assertTrue(launch.intent.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
+        assertTrue(capture.get().isFinishing)
+    }
+
     @Test fun pausedActivityDefersLensUntilResume() {
         val session = booted()
         val capture = resumedCapture("pausing")
