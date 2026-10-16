@@ -16,6 +16,7 @@ import com.raidenyn.screentranslator.lens.IntentStarter
 import com.raidenyn.screentranslator.lens.LensLauncher
 import com.raidenyn.screentranslator.service.ScreenCaptureService
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collectLatest
 
 /** Empty translucent owner for one capture request and its visible Lens handoff. */
 class CaptureActivity : ComponentActivity() {
@@ -34,7 +35,7 @@ class CaptureActivity : ComponentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 active = ::cancel
-                ScreenCaptureService.connection.collect { service ->
+                ScreenCaptureService.connection.collectLatest { service ->
                     if (service == null) abandon() else {
                         request(service)
                         service.requests.results.collect { request(service) }

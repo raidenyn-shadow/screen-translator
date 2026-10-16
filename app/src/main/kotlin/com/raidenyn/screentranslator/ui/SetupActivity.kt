@@ -9,6 +9,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -25,6 +27,7 @@ open class SetupActivity : ComponentActivity() {
     private var captureMode = false
     private var requestId: String? = null
     private var childLaunched = false
+    private var resumed = false
 
     private val consent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         consentResult(result.resultCode, result.data)
@@ -50,8 +53,9 @@ open class SetupActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (!captureMode) {
             setContent {
+                val service by ScreenCaptureService.connection.collectAsState()
                 SetupScreen(
-                    sharing = ScreenCaptureService.connection.value != null,
+                    sharing = service != null,
                     onStartSharing = { requestConsent() },
                     onStopSharing = { ScreenCaptureService.stop(this) },
                 )
@@ -68,11 +72,17 @@ open class SetupActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        resumed = true
         when {
             captureMode && !childLaunched -> launchCapture()
             !captureMode && pendingCapture && ScreenCaptureService.connection.value == null && !consentInFlight -> requestConsent()
             !captureMode && pendingCapture -> beginCapture()
         }
+    }
+
+    override fun onPause() {
+        resumed = false
+        super.onPause()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -90,7 +100,7 @@ open class SetupActivity : ComponentActivity() {
 
     @Deprecated("Activity Result API callback compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        if (requestCode == CONSENT_REQUEST_CODE) consentResult(resultCode, data)
+        if (consentInFlight) consentResult(resultCode, data)
         super.onActivityResult(requestCode, resultCode, data)
     }
 
@@ -112,15 +122,17 @@ open class SetupActivity : ComponentActivity() {
         } else {
             manager.createScreenCaptureIntent()
         }
-        startActivityForResult(intent, CONSENT_REQUEST_CODE)
+        consent.launch(intent)
     }
 
     private fun consentResult(resultCode: Int, data: Intent?) {
         if (!consentInFlight) return
         consentInFlight = false
         if (resultCode == Activity.RESULT_OK && data != null &&
-            lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
-        ) ScreenCaptureService.start(this, resultCode, data)
+            lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        ) {
+            ScreenCaptureService.start(this, resultCode, data)
+        }
     }
 
     private fun beginCapture() {
@@ -161,6 +173,5 @@ open class SetupActivity : ComponentActivity() {
         private const val STATE_CAPTURE_MODE = "capture_mode_state"
         private const val STATE_REQUEST_ID = "request_id_state"
         private const val STATE_CHILD_LAUNCHED = "child_launched"
-        private const val CONSENT_REQUEST_CODE = 1
     }
 }

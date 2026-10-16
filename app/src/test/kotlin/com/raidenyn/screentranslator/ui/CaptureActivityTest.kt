@@ -198,6 +198,7 @@ class CaptureActivityTest {
         val launch = shadow(root.get()).nextStartedActivityForResult ?: error("no capture child")
         val child = Robolectric.buildActivity(CaptureActivity::class.java, launch.intent)
             .create().start().resume().also { activities.add(it) }
+        shadow(child.get()).clearNextStartedActivities()
         testScope.testScheduler.advanceTimeBy(CAPTURE_DELAY_MS)
         testScope.testScheduler.runCurrent()
 

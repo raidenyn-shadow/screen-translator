@@ -144,6 +144,7 @@ class ReusedLaunchTest {
 
         val state = Bundle()
         original.pause().saveInstanceState(state).stop().destroy()
+        activities.remove(original)
         val restored = Robolectric.buildActivity(TrampolineActivity::class.java, sidebar())
             .create(state).also { activities.add(it) }
 
