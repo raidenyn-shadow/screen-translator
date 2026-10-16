@@ -32,6 +32,31 @@ BUILD SUCCESSFUL in 31s
 
 The merged debug manifest again contains both foreground-service permissions, a non-exported `mediaProjection` `ScreenCaptureService`, a non-exported `CaptureActivity`, and the `singleTask` launcher. It contains no Accessibility service. Searching main source/resources for `AccessibilityService`, `takeScreenshot`, `canTakeScreenshot`, `ACTION_ACCESSIBILITY_SETTINGS`, and automatic Translate copy returned no matches.
 
+## Consent Re-review Fixes
+
+Final authoritative status: complete and verified.
+
+- Duplicate sidebar intents now honor `awaitingSession` and cannot prompt for a second consent grant while a successful grant is starting its service.
+- Deferred consent result code and data are saved/restored and consumed once from a resumed root.
+- Consent-intent creation is an overridable narrow seam and all creation/launch/start failures reset to usable settings.
+
+Targeted Activity tests passed:
+
+```text
+BUILD SUCCESSFUL in 22s
+29 actionable tasks: 5 executed, 24 up-to-date
+```
+
+Full verification passed:
+
+```text
+JAVA_HOME=$JAVA_ROOT/zulu21 ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+BUILD SUCCESSFUL in 27s
+56 actionable tasks: 11 executed, 45 up-to-date
+```
+
+The merged manifest retains both foreground-service permissions, non-exported `CaptureActivity` and mediaProjection service, and the singleTask launcher. The required forbidden-reference search returned no matches.
+
 ## Completion
 
 ### RED Evidence

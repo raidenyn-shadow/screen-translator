@@ -52,6 +52,10 @@ open class SetupActivity : ComponentActivity() {
             ?: intent.getStringExtra(EXTRA_REQUEST_ID)
         childLaunched = savedInstanceState?.getBoolean(STATE_CHILD_LAUNCHED) ?: false
         awaitingSession = savedInstanceState?.getBoolean(STATE_AWAITING_SESSION) ?: false
+        if (savedInstanceState?.getBoolean(STATE_DEFERRED_CONSENT) == true) {
+            deferredConsent = savedInstanceState.getInt(STATE_DEFERRED_RESULT_CODE) to
+                savedInstanceState.getParcelable(STATE_DEFERRED_DATA)
+        }
         setTheme(if (captureMode) R.style.Theme_ScreenTranslator_Capture else R.style.Theme_ScreenTranslator_Setup)
         super.onCreate(savedInstanceState)
         if (!captureMode) {
@@ -100,7 +104,8 @@ open class SetupActivity : ComponentActivity() {
             return
         }
         pendingCapture = true
-        if (ScreenCaptureService.connection.value != null) beginCapture() else if (!consentInFlight) requestConsent()
+        if (ScreenCaptureService.connection.value != null) beginCapture()
+        else if (!consentInFlight && !awaitingSession) requestConsent()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -110,17 +115,19 @@ open class SetupActivity : ComponentActivity() {
         outState.putString(STATE_REQUEST_ID, requestId)
         outState.putBoolean(STATE_CHILD_LAUNCHED, childLaunched)
         outState.putBoolean(STATE_AWAITING_SESSION, awaitingSession)
+        deferredConsent?.let { (code, data) ->
+            outState.putBoolean(STATE_DEFERRED_CONSENT, true)
+            outState.putInt(STATE_DEFERRED_RESULT_CODE, code)
+            outState.putParcelable(STATE_DEFERRED_DATA, data)
+        }
         super.onSaveInstanceState(outState)
     }
 
     private fun requestConsent() {
-        if (consentInFlight) return
+        if (consentInFlight || awaitingSession) return
         consentInFlight = true
         try {
-            val manager = getSystemService(MediaProjectionManager::class.java)
-            val intent = if (Build.VERSION.SDK_INT >= 34) {
-                manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
-            } else manager.createScreenCaptureIntent()
+            val intent = consentIntent()
             consent.launch(intent)
         } catch (_: Throwable) {
             failToSettings(getString(R.string.error_session_failed))
@@ -136,7 +143,18 @@ open class SetupActivity : ComponentActivity() {
         consentInFlight = false
         if (resultCode != Activity.RESULT_OK || data == null) { returnToSettings(); return }
         awaitingSession = true
-        try { ScreenCaptureService.start(this, resultCode, data) } catch (_: Throwable) { failToSettings(getString(R.string.error_session_failed)) }
+        try { startSession(resultCode, data) } catch (_: Throwable) { failToSettings(getString(R.string.error_session_failed)) }
+    }
+
+    protected open fun consentIntent(): Intent {
+        val manager = getSystemService(MediaProjectionManager::class.java)
+        return if (Build.VERSION.SDK_INT >= 34) {
+            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+        } else manager.createScreenCaptureIntent()
+    }
+
+    protected open fun startSession(resultCode: Int, data: Intent) {
+        ScreenCaptureService.start(this, resultCode, data)
     }
 
     private fun beginCapture() {
@@ -164,6 +182,8 @@ open class SetupActivity : ComponentActivity() {
         requestId = null
         childLaunched = false
         awaitingSession = false
+        consentInFlight = false
+        deferredConsent = null
         intent.removeExtra(EXTRA_CAPTURE_MODE)
         intent.removeExtra(EXTRA_REQUEST_ID)
         recreate()
@@ -184,5 +204,8 @@ open class SetupActivity : ComponentActivity() {
         private const val STATE_REQUEST_ID = "request_id_state"
         private const val STATE_CHILD_LAUNCHED = "child_launched"
         private const val STATE_AWAITING_SESSION = "awaiting_session"
+        private const val STATE_DEFERRED_CONSENT = "deferred_consent"
+        private const val STATE_DEFERRED_RESULT_CODE = "deferred_result_code"
+        private const val STATE_DEFERRED_DATA = "deferred_data"
     }
 }
