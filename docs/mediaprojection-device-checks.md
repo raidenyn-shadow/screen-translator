@@ -24,7 +24,7 @@ Run every check on at least one Android 11/API 30 device and one Android 13/API
 | Stop from system sharing controls | Stop sharing through Android's system UI; the session ends and the next capture needs fresh consent. | UNRUN |
 | Lock or revoke sharing | Lock the device and, where available, revoke sharing; confirm the session ends and fresh consent is required. | UNRUN |
 | Rotate during a live session | Rotate the device, then capture again; the PNG has the current geometry and the session remains usable or reports a concise failure. | UNRUN |
-| Kill and relaunch the app process | End the process, relaunch, and verify there is no restored sharing session or reused consent. | UNRUN |
+| Kill and relaunch the app process | End the process and relaunch the app. Attempt another Sidebar capture and verify Android shows a fresh consent prompt; no sharing session or consent token is restored. | UNRUN |
 | Test without Google Lens | Disable/uninstall the Google app or otherwise make Lens unavailable; the app reports a concise launch failure and stays usable. | UNRUN |
 | Tap Sidebar while settings already exists | With an existing settings task, tap Sidebar and verify ColorOS routes the new intent to capture rather than only foregrounding stale settings. | UNRUN |
 

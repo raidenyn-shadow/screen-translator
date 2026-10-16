@@ -9,8 +9,10 @@ the screenshot in **Google Lens**. Select **Translate** manually in Lens.
 - The Google app installed with Google Lens available.
 - Permission to share the screen when Android asks.
 
-The capture-and-translate approach was verified by the user on a OnePlus PYB110
-running Android 17 with Google app `17.64.15.ve.arm64`.
+On a OnePlus PYB110 running Android 17 with Google app
+`17.64.15.ve.arm64`, the user verified ColorOS Smart Sidebar launch routing and
+Google Lens availability. MediaProjection capture behavior remains unverified on
+a physical device; see the device checklist below.
 
 ## Install
 
