@@ -174,7 +174,7 @@ class SetupActivityTest {
         assertNull(shadow(controller.get()).peekNextStartedActivityForResult())
     }
 
-    @Test fun consentResultWhileNotVisibleIsNeverForwarded() {
+    @Test fun consentResultWhileStoppedIsForwardedOnceAfterResume() {
         val controller = setupActivity(pendingCapture = true)
         ShadowLooper.idleMainLooper()
         val consent = launchedConsent(controller.get())
@@ -186,6 +186,10 @@ class SetupActivityTest {
 
         controller.restart().start().resume()
         ShadowLooper.idleMainLooper()
+        assertEquals(
+            ScreenCaptureService.ACTION_START,
+            Shadows.shadowOf(app).nextStartedService?.action ?: error("deferred grant was not forwarded"),
+        )
         assertNull(Shadows.shadowOf(app).peekNextStartedService())
     }
 

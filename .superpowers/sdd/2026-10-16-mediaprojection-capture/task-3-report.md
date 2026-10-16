@@ -4,13 +4,9 @@
 
 Complete. The MediaProjection foreground-service and Activity migration is verified by the full unit-test, debug-assembly, and lint command.
 
-## Verification
+## Historical Attempt
 
-The targeted Activity suite compiles and runs. Its latest run has six failures: `SetupActivityTest.consentSuccessStartsTheServiceOnceWhileVisible`, three `ReusedLaunchTest` cases, and two `CaptureActivityTest` cases. The required full verification was not run.
-
-## Concern
-
-Robolectric result delivery through the Activity Result/legacy bridge still needs resolution before this change is mergeable.
+An earlier attempt had six targeted-test failures before the teardown isolation and lifecycle fixes recorded below. Those failures are historical only; they are not the current state.
 
 ## Review Fixes
 
@@ -35,6 +31,8 @@ The merged debug manifest again contains both foreground-service permissions, a 
 ## Consent Re-review Fixes
 
 Final authoritative status: complete and verified.
+
+Deferred-consent round three delivered stopped results from a posted RESUMED-state callback, preventing re-deferral. The stopped-result test now proves one service start after resume and no queued duplicate. Targeted verification passed in 16s and the required full command passed in 28s.
 
 - Duplicate sidebar intents now honor `awaitingSession` and cannot prompt for a second consent grant while a successful grant is starting its service.
 - Deferred consent result code and data are saved/restored and consumed once from a resumed root.

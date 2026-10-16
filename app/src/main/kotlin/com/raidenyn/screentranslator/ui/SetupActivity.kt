@@ -86,11 +86,19 @@ open class SetupActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        deferredConsent?.let { (code, data) -> deferredConsent = null; consentResult(code, data) }
+        window.decorView.post { deliverDeferredConsent() }
         when {
             captureMode && !childLaunched -> launchCapture()
             !captureMode && pendingCapture && ScreenCaptureService.connection.value == null && !consentInFlight && !awaitingSession -> requestConsent()
             !captureMode && pendingCapture -> beginCapture()
+        }
+    }
+
+    private fun deliverDeferredConsent() {
+        if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
+        deferredConsent?.let { (code, data) ->
+            deferredConsent = null
+            consentResult(code, data)
         }
     }
 
