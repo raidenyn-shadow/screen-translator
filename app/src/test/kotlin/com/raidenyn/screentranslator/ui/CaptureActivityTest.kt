@@ -1,12 +1,12 @@
 package com.raidenyn.screentranslator.ui
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.Bundle
 import android.view.ViewGroup
 import androidx.core.content.IntentCompat
 import androidx.test.core.app.ApplicationProvider
@@ -37,9 +37,12 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
 import org.robolectric.annotation.LooperMode
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowActivity
+import org.robolectric.shadows.ShadowAppTask
 import org.robolectric.shadows.ShadowInstrumentation
 import org.robolectric.shadows.ShadowLooper
 import org.robolectric.shadows.ShadowToast
@@ -91,7 +94,15 @@ class CaptureActivityTest {
     /** A created, started and resumed capture activity for [requestId] against the booted session. */
     private fun resumedCapture(requestId: String): ActivityController<CaptureActivity> =
         Robolectric.buildActivity(CaptureActivity::class.java, CaptureActivity.intent(context, requestId))
-            .create().start().resume().also { activities.add(it) }
+            .create().start().resume().also {
+                activities.add(it)
+                val task = appTask(it.get().taskId)
+                Shadows.shadowOf(it.get().getSystemService(ActivityManager::class.java)).setAppTasks(listOf(task))
+            }
+
+    private fun appTask(taskId: Int): ActivityManager.AppTask = ShadowAppTask.newInstance().also {
+        Shadows.shadowOf(it).setTaskInfo(ActivityManager.RecentTaskInfo().apply { this.taskId = taskId })
+    }
 
     /**
      * Advances the capture delay so the in-flight request parks awaiting a frame, then
@@ -158,15 +169,22 @@ class CaptureActivityTest {
     }
 
     @Test
-    @Config(application = LensLaunchApplication::class)
-    fun screenshotHandoffLaunchesFullscreenLensWithoutAnActivitySource() {
+    @Config(shadows = [OrderedAppTaskShadow::class])
+    fun screenshotHandoffRemovesOnlyItsEntireTaskBeforeLaunchingLens() {
         val session = booted()
         val capture = resumedCapture("fullscreen")
+        val manager = capture.get().getSystemService(ActivityManager::class.java)
+        val captureTask = manager.appTasks.single()
+        val unrelatedTask = appTask(capture.get().taskId + 1)
+        Shadows.shadowOf(manager).setAppTasks(listOf(unrelatedTask, captureTask))
 
         completePendingCapture(session)
 
         val launch = shadow(capture.get()).nextStartedActivityForResult ?: error("no Lens handoff")
-        assertEquals(listOf(launch.intent), (app as LensLaunchApplication).launchedIntents)
+        val removedTask = Shadow.extract<OrderedAppTaskShadow>(captureTask)
+        assertTrue(removedTask.isFinishedAndRemoved)
+        assertNull(removedTask.activityAtRemoval)
+        assertFalse(Shadows.shadowOf(unrelatedTask).isFinishedAndRemoved)
         assertEquals(1, launch.options?.getInt("android.activity.windowingMode"))
         assertEquals("com.google.android.apps.search.lens.LensShareEntryPointActivity", launch.intent.component?.className)
         assertEquals(savedCaptureUri(), IntentCompat.getParcelableExtra(launch.intent, Intent.EXTRA_STREAM, Uri::class.java))
@@ -175,14 +193,30 @@ class CaptureActivityTest {
         assertTrue(capture.get().isFinishing)
     }
 
-    /** Records application-context dispatch while retaining the real Android start path. */
-    class LensLaunchApplication : Application() {
-        val launchedIntents = mutableListOf<Intent>()
+    /** Observes task-removal ordering without replacing the actual Lens dispatch. */
+    @Implements(ActivityManager.AppTask::class)
+    class OrderedAppTaskShadow : ShadowAppTask() {
+        var activityAtRemoval: Intent? = null
 
-        override fun startActivity(intent: Intent, options: Bundle?) {
-            launchedIntents.add(intent)
-            super.startActivity(intent, options)
+        @Implementation
+        public override fun finishAndRemoveTask() {
+            activityAtRemoval = Shadows.shadowOf(ApplicationProvider.getApplicationContext<Application>())
+                .peekNextStartedActivity()
+            super.finishAndRemoveTask()
         }
+    }
+
+    @Test fun missingCaptureTaskReportsFailureWithoutLaunchingLens() {
+        val session = booted()
+        val capture = resumedCapture("missing-task")
+        Shadows.shadowOf(capture.get().getSystemService(ActivityManager::class.java)).setAppTasks(emptyList())
+
+        completePendingCapture(session)
+
+        assertNull(shadow(capture.get()).peekNextStartedActivity())
+        assertEquals(context.getString(R.string.error_launch_failed), ShadowToast.getTextOfLatestToast())
+        assertEquals(Activity.RESULT_CANCELED, shadow(capture.get()).resultCode)
+        assertEquals(emptyMap<String, CaptureResult>(), session.service.requests.results.value)
     }
 
     @Test fun pausedActivityDefersLensUntilResume() {
