@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Bundle
 import android.view.ViewGroup
 import androidx.core.content.IntentCompat
 import androidx.test.core.app.ApplicationProvider
@@ -156,19 +157,32 @@ class CaptureActivityTest {
         assertNull(shadow(root.get()).peekNextStartedActivityForResult())
     }
 
-    @Test fun screenshotHandoffRequestsFullscreenLens() {
+    @Test
+    @Config(application = LensLaunchApplication::class)
+    fun screenshotHandoffLaunchesFullscreenLensWithoutAnActivitySource() {
         val session = booted()
         val capture = resumedCapture("fullscreen")
 
         completePendingCapture(session)
 
         val launch = shadow(capture.get()).nextStartedActivityForResult ?: error("no Lens handoff")
+        assertEquals(listOf(launch.intent), (app as LensLaunchApplication).launchedIntents)
         assertEquals(1, launch.options?.getInt("android.activity.windowingMode"))
         assertEquals("com.google.android.apps.search.lens.LensShareEntryPointActivity", launch.intent.component?.className)
         assertEquals(savedCaptureUri(), IntentCompat.getParcelableExtra(launch.intent, Intent.EXTRA_STREAM, Uri::class.java))
         assertTrue(launch.intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0)
         assertTrue(launch.intent.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
         assertTrue(capture.get().isFinishing)
+    }
+
+    /** Records application-context dispatch while retaining the real Android start path. */
+    class LensLaunchApplication : Application() {
+        val launchedIntents = mutableListOf<Intent>()
+
+        override fun startActivity(intent: Intent, options: Bundle?) {
+            launchedIntents.add(intent)
+            super.startActivity(intent, options)
+        }
     }
 
     @Test fun pausedActivityDefersLensUntilResume() {

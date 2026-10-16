@@ -19,6 +19,7 @@ Run every check on at least one Android 11/API 30 device and one Android 13/API
 | Deny or cancel consent from a Sidebar launch | The app returns to usable settings with no capture or Lens launch. | UNRUN |
 | Inspect OEM sharing choices | Document whether the device offers full-screen only or an OEM/app-selection choice; choose the full screen when offered and record the result. | UNRUN |
 | Capture a static target screen repeatedly | Several Sidebar taps during one live session create fresh captures without another consent prompt. | UNRUN |
+| Verify Lens window presentation | Cold and warm Sidebar captures open the image in visibly full-screen Lens, including when Lens was previously floating in recents. See `2026-10-16-lens-floating-window-findings.md`. | UNRUN |
 | Verify saved PNG content | **Critical:** the saved PNG shows the underlying target screen, not Screen Translator settings, the consent UI, or a translucent launcher window. | UNRUN |
 | Stop from the notification | Tap **Stop sharing** in the ongoing notification; sharing ends and the next Sidebar capture needs fresh consent. | UNRUN |
 | Stop from system sharing controls | Stop sharing through Android's system UI; the session ends and the next capture needs fresh consent. | UNRUN |

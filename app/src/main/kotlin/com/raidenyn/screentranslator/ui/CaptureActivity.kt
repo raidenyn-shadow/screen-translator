@@ -78,7 +78,9 @@ class CaptureActivity : ComponentActivity() {
         if (consumed || !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
         consumed = true
         val launcher = LensLauncher(contentResolver, IntentStarter { intent, options ->
-            startActivity(intent, options)
+            // Keep this activity visible for launch eligibility, but omit its task token:
+            // ColorOS links activity-originated launches to the sidebar's floating task.
+            applicationContext.startActivity(intent, options)
         })
         if (launcher.launch(result.uri)) {
             service.requests.acknowledge(requestId)
