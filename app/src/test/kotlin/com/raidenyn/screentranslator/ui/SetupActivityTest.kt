@@ -6,12 +6,17 @@ import android.content.Context
 import android.content.Intent
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
+import android.os.Bundle
 import android.view.ViewGroup
 import androidx.core.content.IntentCompat
+import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ApplicationProvider
 import com.raidenyn.screentranslator.service.ScreenCaptureService
 import com.raidenyn.screentranslator.service.SessionBoot
 import com.raidenyn.screentranslator.service.bootSession
+import com.raidenyn.screentranslator.service.ScriptedEnvironment
+import com.raidenyn.screentranslator.service.ScriptedSession
+import com.raidenyn.screentranslator.service.driveCommand
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.TestScope
 import org.junit.After
@@ -26,6 +31,7 @@ import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.android.controller.ActivityController
+import org.robolectric.android.controller.ServiceController
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
 import org.robolectric.shadow.api.Shadow
@@ -43,11 +49,14 @@ class SetupActivityTest {
     private val testScope = TestScope()
     private val activities = mutableListOf<ActivityController<out Activity>>()
     private var boot: SessionBoot? = null
+    private var failedService: ServiceController<ScreenCaptureService>? = null
 
     @After fun clean() {
         activities.forEach { it.pause().stop().destroy() }
         boot?.controller?.destroy()
         boot = null
+        failedService?.destroy()
+        failedService = null
         testScope.cancel()
     }
 
@@ -79,6 +88,71 @@ class SetupActivityTest {
     /** One granted consent result the activity has not consumed yet. */
     private fun consentData(): Intent =
         Intent().putExtra("media_projection_token", UUID.randomUUID().toString())
+
+    private fun assertIdleOpaqueSettings(controller: ActivityController<out SetupActivity>) {
+        ShadowLooper.idleMainLooper()
+        val activity = controller.get()
+        assertFalse(activity.isFinishing)
+        assertFalse(isTranslucent(activity))
+        assertTrue(contentChildren(activity) > 0)
+        assertNull(shadow(activity).peekNextStartedActivityForResult())
+        assertNull(Shadows.shadowOf(app).peekNextStartedService())
+    }
+
+    private fun assertLaterStartDispatches(controller: ActivityController<out SetupActivity>) {
+        controller.newIntent(pendingIntent())
+        ShadowLooper.idleMainLooper()
+        val consent = launchedConsent(controller.get())
+        Shadows.shadowOf(controller.get()).receiveResult(consent.intent, Activity.RESULT_OK, consentData())
+        ShadowLooper.idleMainLooper()
+        assertEquals(ScreenCaptureService.ACTION_START, Shadows.shadowOf(app).nextStartedService?.action)
+        assertNull(Shadows.shadowOf(app).peekNextStartedService())
+    }
+
+    private class ThrowingConsentIntentActivity : SetupActivity() {
+        override fun consentIntent(): Intent {
+            if (throwOnNextConsent) {
+                throwOnNextConsent = false
+                throw IllegalStateException("intent creation failed")
+            }
+            return Intent("test.consent")
+        }
+
+        companion object { var throwOnNextConsent = true }
+    }
+
+    private class ThrowingConsentLauncherActivity : SetupActivity() {
+        override fun consentIntent() = Intent("test.consent")
+
+        override fun launchConsent(intent: Intent) {
+            if (throwOnNextLaunch) {
+                throwOnNextLaunch = false
+                throw IllegalStateException("launcher failed")
+            }
+            super.launchConsent(intent)
+        }
+
+        companion object { var throwOnNextLaunch = true }
+    }
+
+    private class ThrowingServiceStartActivity : SetupActivity() {
+        override fun consentIntent() = Intent("test.consent")
+
+        override fun startSession(resultCode: Int, data: Intent) {
+            if (throwOnNextStart) {
+                throwOnNextStart = false
+                throw IllegalStateException("service dispatch failed")
+            }
+            super.startSession(resultCode, data)
+        }
+
+        companion object { var throwOnNextStart = true }
+    }
+
+    private class StateSavingSetupActivity : SetupActivity() {
+        fun save(state: Bundle) = onSaveInstanceState(state)
+        fun deliverConsentResult(resultCode: Int, data: Intent?) = consentResult(resultCode, data)
+    }
 
     @Test fun settingsModeOpensWithoutConsent() {
         val controller = setupActivity(pendingCapture = false)
@@ -191,6 +265,83 @@ class SetupActivityTest {
             Shadows.shadowOf(app).nextStartedService?.action ?: error("deferred grant was not forwarded"),
         )
         assertNull(Shadows.shadowOf(app).peekNextStartedService())
+    }
+
+    @Test fun deferredConsentSurvivesRecreationBeforeResumeAndStartsOnce() {
+        val controller = Robolectric.buildActivity(StateSavingSetupActivity::class.java, pendingIntent()).setup()
+            .also { activities.add(it) }
+        ShadowLooper.idleMainLooper()
+        val consent = launchedConsent(controller.get())
+
+        controller.pause().stop()
+        controller.get().deliverConsentResult(Activity.RESULT_OK, consentData())
+        ShadowLooper.idleMainLooper()
+        assertNull(Shadows.shadowOf(app).peekNextStartedService())
+
+        val state = Bundle()
+        controller.get().save(state)
+        controller.destroy()
+        activities.remove(controller)
+        val restored = Robolectric.buildActivity(StateSavingSetupActivity::class.java, pendingIntent()).create(state)
+            .also { activities.add(it) }
+        ShadowLooper.idleMainLooper()
+        assertNull(Shadows.shadowOf(app).peekNextStartedService())
+
+        restored.start().resume()
+        ShadowLooper.idleMainLooper()
+        assertEquals(Lifecycle.State.RESUMED, restored.get().lifecycle.currentState)
+        assertEquals(ScreenCaptureService.ACTION_START, Shadows.shadowOf(app).nextStartedService?.action)
+        assertNull(Shadows.shadowOf(app).peekNextStartedService())
+
+        restored.recreate()
+        ShadowLooper.idleMainLooper()
+        assertNull(Shadows.shadowOf(app).peekNextStartedService())
+    }
+
+    @Test fun consentIntentFailureReturnsToSettingsAndAllowsAnotherStart() {
+        ThrowingConsentIntentActivity.throwOnNextConsent = true
+        val controller = Robolectric.buildActivity(ThrowingConsentIntentActivity::class.java, pendingIntent()).setup()
+            .also { activities.add(it) }
+
+        assertIdleOpaqueSettings(controller)
+        assertLaterStartDispatches(controller)
+    }
+
+    @Test fun consentLauncherFailureReturnsToSettingsAndAllowsAnotherStart() {
+        ThrowingConsentLauncherActivity.throwOnNextLaunch = true
+        val controller = Robolectric.buildActivity(ThrowingConsentLauncherActivity::class.java, pendingIntent()).setup()
+            .also { activities.add(it) }
+
+        assertIdleOpaqueSettings(controller)
+        assertLaterStartDispatches(controller)
+    }
+
+    @Test fun serviceStartFailureReturnsToSettingsAndAllowsAnotherStart() {
+        ThrowingServiceStartActivity.throwOnNextStart = true
+        val controller = Robolectric.buildActivity(ThrowingServiceStartActivity::class.java, pendingIntent()).setup()
+            .also { activities.add(it) }
+        val consent = launchedConsent(controller.get())
+        Shadows.shadowOf(controller.get()).receiveResult(consent.intent, Activity.RESULT_OK, consentData())
+
+        assertIdleOpaqueSettings(controller)
+        assertLaterStartDispatches(controller)
+    }
+
+    @Test fun publishedStartupErrorReturnsToSettingsAndAllowsAnotherStart() {
+        val controller = setupActivity(pendingCapture = true)
+        ShadowLooper.idleMainLooper()
+        val consent = launchedConsent(controller.get())
+        Shadows.shadowOf(controller.get()).receiveResult(consent.intent, Activity.RESULT_OK, consentData())
+        val start = Shadows.shadowOf(app).nextStartedService ?: error("consent did not dispatch service start")
+        val session = ScriptedSession(ScriptedEnvironment()).apply { failAcquire = true }
+        failedService = Robolectric.buildService(ScreenCaptureService::class.java).create().also {
+            it.get().session = session
+            it.get().scopeFactory = { testScope }
+            driveCommand(it, start)
+        }
+
+        assertIdleOpaqueSettings(controller)
+        assertLaterStartDispatches(controller)
     }
 
     @Test fun recreationDoesNotRelaunchConsent() {

@@ -99,3 +99,57 @@ Merged manifest: `app/build/intermediates/merged_manifests/debug/processDebugMan
 - No Accessibility service declaration exists.
 
 Searching `app/src/main` for `AccessibilityService`, `takeScreenshot`, `canTakeScreenshot`, `ACTION_ACCESSIBILITY_SETTINGS`, `selects Translate automatically`, `select Translate automatically`, and `automatic Translate` returned no matches.
+
+## Task 3 Fix Round 4
+
+### RED Evidence
+
+The five new `SetupActivityTest` selectors were first run individually against the prior implementation. Each command was red at test compilation because the consent launcher had no narrow injectable boundary:
+
+```text
+SetupActivityTest.deferredConsentSurvivesRecreationBeforeResumeAndStartsOnce
+SetupActivityTest.consentIntentFailureReturnsToSettingsAndAllowsAnotherStart
+SetupActivityTest.consentLauncherFailureReturnsToSettingsAndAllowsAnotherStart
+SetupActivityTest.serviceStartFailureReturnsToSettingsAndAllowsAnotherStart
+SetupActivityTest.publishedStartupErrorReturnsToSettingsAndAllowsAnotherStart
+
+'launchConsent' overrides nothing
+Unresolved reference 'launchConsent'
+BUILD FAILED
+```
+
+After adding only that protected launcher boundary, the executable deferred-result regression remained red: the recreated root reached `RESUMED` without a service-start dispatch. The saved deferred grant was intact; its posted delivery ran before the lifecycle reached `RESUMED` and was not retried. The failure was `SetupActivityTest.deferredConsentSurvivesRecreationBeforeResumeAndStartsOnce` at the expected start-service assertion.
+
+### Fix And GREEN Evidence
+
+- `SetupActivity` now processes deferred consent inside a `repeatOnLifecycle(RESUMED)` block. It persists the stopped-result grant through saved state, delivers it only after the recreated root is resumed, and consumes it once.
+- `consentResult` and consent-launching are protected narrow seams, allowing deterministic tests for a stopped result and a launcher exception without framework-wide mocks.
+- New recovery tests independently cover throwing consent-intent creation, throwing launcher dispatch, throwing service dispatch, and a real service-published `startupError`. Each asserts an idle opaque settings root with no queued prompt/start and verifies a later explicit start dispatches the service.
+
+Focused new-regression command passed:
+
+```text
+JAVA_HOME=$JAVA_ROOT/zulu21 ./gradlew :app:testDebugUnitTest --tests com.raidenyn.screentranslator.ui.SetupActivityTest.deferredConsentSurvivesRecreationBeforeResumeAndStartsOnce --tests com.raidenyn.screentranslator.ui.SetupActivityTest.consentIntentFailureReturnsToSettingsAndAllowsAnotherStart --tests com.raidenyn.screentranslator.ui.SetupActivityTest.consentLauncherFailureReturnsToSettingsAndAllowsAnotherStart --tests com.raidenyn.screentranslator.ui.SetupActivityTest.serviceStartFailureReturnsToSettingsAndAllowsAnotherStart --tests com.raidenyn.screentranslator.ui.SetupActivityTest.publishedStartupErrorReturnsToSettingsAndAllowsAnotherStart
+BUILD SUCCESSFUL in 19s
+29 actionable tasks: 5 executed, 24 up-to-date
+```
+
+Required targeted Activity verification passed:
+
+```text
+JAVA_HOME=$JAVA_ROOT/zulu21 ./gradlew :app:testDebugUnitTest --tests '*SetupActivityTest' --tests '*TrampolineActivityTest' --tests '*ReusedLaunchTest' --tests '*CaptureActivityTest'
+BUILD SUCCESSFUL in 19s
+29 actionable tasks: 2 executed, 27 up-to-date
+```
+
+Required full verification passed:
+
+```text
+JAVA_HOME=$JAVA_ROOT/zulu21 ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+BUILD SUCCESSFUL in 28s
+56 actionable tasks: 4 executed, 52 up-to-date
+```
+
+## Final Status
+
+Complete. The round-four deferred-consent recreation and independent recovery proofs are implemented and verified by the commands above.

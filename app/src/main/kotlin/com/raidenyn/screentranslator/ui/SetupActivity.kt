@@ -17,6 +17,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.raidenyn.screentranslator.R
 import com.raidenyn.screentranslator.service.ScreenCaptureService
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -82,11 +83,16 @@ open class SetupActivity : ComponentActivity() {
                 }
             }
         }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                deliverDeferredConsent()
+                awaitCancellation()
+            }
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        window.decorView.post { deliverDeferredConsent() }
         when {
             captureMode && !childLaunched -> launchCapture()
             !captureMode && pendingCapture && ScreenCaptureService.connection.value == null && !consentInFlight && !awaitingSession -> requestConsent()
@@ -136,13 +142,13 @@ open class SetupActivity : ComponentActivity() {
         consentInFlight = true
         try {
             val intent = consentIntent()
-            consent.launch(intent)
+            launchConsent(intent)
         } catch (_: Throwable) {
             failToSettings(getString(R.string.error_session_failed))
         }
     }
 
-    private fun consentResult(resultCode: Int, data: Intent?) {
+    protected open fun consentResult(resultCode: Int, data: Intent?) {
         if (!consentInFlight) return
         if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) {
             deferredConsent = resultCode to data
@@ -159,6 +165,10 @@ open class SetupActivity : ComponentActivity() {
         return if (Build.VERSION.SDK_INT >= 34) {
             manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
         } else manager.createScreenCaptureIntent()
+    }
+
+    protected open fun launchConsent(intent: Intent) {
+        consent.launch(intent)
     }
 
     protected open fun startSession(resultCode: Int, data: Intent) {
