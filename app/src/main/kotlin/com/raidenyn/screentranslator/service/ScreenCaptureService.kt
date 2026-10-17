@@ -151,9 +151,12 @@ class ScreenCaptureService : Service() {
         sessionScope().launch {
             val result = pipeline.results.first { it.containsKey(id) }[id]!!
             pipeline.acknowledge(id)
-            when (result) {
-                is CaptureResult.Saved -> startTranslationRelay(result.uri)
-                is CaptureResult.Failed -> Toast.makeText(this@ScreenCaptureService, result.error.labelRes, Toast.LENGTH_SHORT).show()
+            onMain {
+                if (this@ScreenCaptureService.pipeline !== pipeline) return@onMain
+                when (result) {
+                    is CaptureResult.Saved -> startTranslationRelay(result.uri)
+                    is CaptureResult.Failed -> Toast.makeText(this@ScreenCaptureService, result.error.labelRes, Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }

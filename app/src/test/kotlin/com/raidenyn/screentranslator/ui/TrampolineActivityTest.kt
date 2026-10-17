@@ -136,4 +136,13 @@ class TrampolineActivityTest {
         assertTrue(contentChildren(settings) > 0)
         assertEquals(emptyMap<String, CaptureResult>(), boot!!.service.requests.results.value)
     }
+
+    @Test fun sidebarRootFinishesWhenAppTaskLookupIsEmpty() {
+        boot = bootSession(testScope)
+        val root = Robolectric.buildActivity(TrampolineActivity::class.java, sidebarIntent()).setup()
+            .also { activities.add(it) }
+        ShadowLooper.idleMainLooper()
+        assertTrue(root.get().isFinishing)
+        assertEquals(ScreenCaptureService.ACTION_TRANSLATE, Shadows.shadowOf(app).nextStartedService?.action)
+    }
 }

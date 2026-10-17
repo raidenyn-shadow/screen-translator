@@ -42,9 +42,11 @@ import org.robolectric.Shadows
 import org.robolectric.android.controller.ServiceController
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowToast
+import org.robolectric.shadows.ShadowLooper
 import org.robolectric.util.ReflectionHelpers
 import java.io.File
 import java.util.concurrent.Executor
+import kotlin.concurrent.thread
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -375,6 +377,21 @@ class ScreenCaptureServiceTest {
 
         assertNull(Shadows.shadowOf(app).peekNextStartedActivity())
         service.destroy()
+    }
+
+    @Test fun workerCompletionPostsFailureToastToMain() {
+        val boot = booted()
+        ScreenCaptureService.translate(context)
+        driveCommand(boot.controller, Shadows.shadowOf(app).nextStartedService)
+        var workerFailure: Throwable? = null
+        thread {
+            workerFailure = runCatching { testScope.advanceUntilPipelineIdle() }.exceptionOrNull()
+        }.join()
+
+        assertNull(workerFailure)
+        assertNull(ShadowToast.getTextOfLatestToast())
+        ShadowLooper.idleMainLooper()
+        assertEquals(context.getString(R.string.error_screenshot_failed), ShadowToast.getTextOfLatestToast())
     }
 
     @Test fun secondTranslateWhileOneIsInFlightStartsOnlyOneRelay() {

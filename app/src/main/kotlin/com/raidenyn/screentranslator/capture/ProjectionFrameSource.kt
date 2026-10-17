@@ -14,9 +14,14 @@ import android.os.HandlerThread
 import android.view.Display
 import android.view.Surface
 import android.view.WindowManager
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.ByteBuffer
@@ -134,33 +139,23 @@ internal class ProjectionFrameSource internal constructor(
     /** Completes only when this source has attached its one reader/display pair. */
     internal suspend fun awaitReady() = readiness.await()
 
-    suspend fun takeSettled(): Bitmap {
+    suspend fun takeSettled(): Bitmap = coroutineScope {
         check(!closed.get()) { "frame source is closed" }
-        val first = withTimeoutOrNull(timeoutMs) {
-            suspendCancellableCoroutine<Bitmap> { continuation ->
-                val slot = PendingCapture(continuation)
+        val captureScope = this
+        val holder = withTimeoutOrNull(timeoutMs) {
+            suspendCancellableCoroutine<SettledHolder> { continuation ->
+                val slot = PendingCapture(continuation, captureScope)
                 continuation.invokeOnCancellation { executor.execute { cancelSlot(slot) } }
                 executor.execute { arm(slot) }
             }
         } ?: throw IllegalStateException("no fresh frame within $timeoutMs ms")
-        return settleNewest(first)
-    }
-
-    /** Replaces [first] with each newer frame until [settleWindowMs] after arming. */
-    private suspend fun settleNewest(first: Bitmap): Bitmap {
-        val holder = SettledHolder(first)
         try {
-            withTimeoutOrNull(settleWindowMs) {
-                suspendCancellableCoroutine<Unit> { continuation ->
-                    continuation.invokeOnCancellation { executor.execute { holder.disarm() } }
-                    executor.execute { armSettled(holder, continuation) }
-                }
-            }
-        } catch (c: CancellationException) {
-            executor.execute { holder.release() }
-            throw c
+            holder.deadline.await()
+            holder.finish()
+        } finally {
+            // Ownership cleanup cannot depend on a HandlerThread that may already be shut down.
+            holder.release()
         }
-        return holder.finish()
     }
 
     override fun close() {
@@ -198,7 +193,7 @@ internal class ProjectionFrameSource internal constructor(
             return
         }
         if (!slot.active) return
-        if (pending != null || settled != null) {
+        if (pending != null || settled?.active == true) {
             slot.fail(IllegalStateException("another capture is already pending"))
             return
         }
@@ -211,19 +206,6 @@ internal class ProjectionFrameSource internal constructor(
 
     private fun cancelSlot(slot: PendingCapture) {
         if (pending === slot) pending = null
-    }
-
-    private fun armSettled(holder: SettledHolder, continuation: CancellableContinuation<Unit>) {
-        if (closed.get()) {
-            holder.fail(IllegalStateException("frame source is closed"))
-            return
-        }
-        if (pending != null || settled != null) {
-            holder.fail(IllegalStateException("another capture is already pending"))
-            return
-        }
-        settled = holder
-        holder.arm(continuation)
     }
 
     private fun onFrame(from: FrameReader) {
@@ -316,35 +298,34 @@ internal class ProjectionFrameSource internal constructor(
     }
 
     /** One awaited capture; identity-matched so a late cancellation frees only its own slot. */
-    private class PendingCapture(private val continuation: CancellableContinuation<Bitmap>) {
+    private inner class PendingCapture(
+        private val continuation: CancellableContinuation<SettledHolder>,
+        private val scope: CoroutineScope,
+    ) {
         val active get() = continuation.isActive
-        fun complete(bitmap: Bitmap) = continuation.resume(bitmap) { _, value, _ -> value.recycle() }
+        fun complete(bitmap: Bitmap) {
+            // Install collection before resuming the caller; no idle gap can discard newer frames.
+            val holder = SettledHolder(bitmap)
+            settled = holder
+            holder.start(scope)
+            continuation.resume(holder) { _, value, _ -> value.release() }
+        }
         fun fail(error: Throwable) = continuation.resumeWithException(error)
     }
 
     private inner class SettledHolder(first: Bitmap) {
         private val lock = Any()
         private var candidate: Bitmap? = first
-        private var collecting = false
-        private var continuation: CancellableContinuation<Unit>? = null
+        private var collecting = true
+        private var timer: Job? = null
+        val deadline = CompletableDeferred<Unit>()
+        val active get() = synchronized(lock) { candidate != null }
 
-        fun arm(continuation: CancellableContinuation<Unit>) {
-            synchronized(lock) {
-                collecting = true
-                this.continuation = continuation
-            }
-            val image = try {
-                reader?.acquireLatestImage()
-            } catch (_: IllegalStateException) {
-                null
-            } ?: return
-            try {
-                val plane = image.plane
-                offer(bitmapConverter(plane.buffer, image.width, image.height, plane.pixelStride, plane.rowStride))
-            } catch (_: Throwable) {
-                // A malformed queued frame leaves the first fresh candidate intact.
-            } finally {
-                image.close()
+        fun start(scope: CoroutineScope) {
+            timer = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                delay(settleWindowMs)
+                synchronized(lock) { collecting = false }
+                deadline.complete(Unit)
             }
         }
 
@@ -355,41 +336,26 @@ internal class ProjectionFrameSource internal constructor(
             replaced?.recycle()
         }
 
-        fun disarm() {
-            synchronized(lock) {
-                collecting = false
-                continuation = null
-            }
-            if (settled === this) settled = null
-        }
-
         fun finish(): Bitmap {
             val result = synchronized(lock) {
                 collecting = false
-                continuation = null
                 candidate.also { candidate = null }
             } ?: throw IllegalStateException("settled capture has no frame")
-            executor.execute { if (settled === this) settled = null }
             return result
         }
 
         fun fail(error: Throwable) {
-            val state = synchronized(lock) {
-                collecting = false
-                candidate.also { candidate = null } to continuation.also { continuation = null }
-            }
-            state.first?.recycle()
-            state.second?.resumeWithException(error)
+            deadline.completeExceptionally(error)
+            release()
         }
 
         fun release() {
             val bitmap = synchronized(lock) {
                 collecting = false
-                continuation = null
                 candidate.also { candidate = null }
             }
             bitmap?.recycle()
-            if (settled === this) settled = null
+            timer?.cancel()
         }
     }
 }

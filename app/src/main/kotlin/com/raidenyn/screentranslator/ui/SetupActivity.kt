@@ -174,11 +174,13 @@ open class SetupActivity : ComponentActivity() {
 
     private fun removeOwnTask() {
         try {
-            getSystemService(ActivityManager::class.java).appTasks
-                .firstOrNull { it.taskInfo.taskId == taskId }?.finishAndRemoveTask()
+            val ownTask = getSystemService(ActivityManager::class.java).appTasks
+                .firstOrNull { it.taskInfo.taskId == taskId }
+            if (ownTask != null) { ownTask.finishAndRemoveTask(); return }
         } catch (_: IllegalArgumentException) {
         } catch (_: SecurityException) {
         }
+        finishAndRemoveTask()
     }
 
     private fun returnToSettings() {

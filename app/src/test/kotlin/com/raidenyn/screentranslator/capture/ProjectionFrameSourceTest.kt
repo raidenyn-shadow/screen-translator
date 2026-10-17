@@ -166,9 +166,10 @@ class ProjectionFrameSourceTest {
 
     private class QueuedExecutor : Executor {
         private val tasks = ArrayDeque<Runnable>()
+        var accepting = true
 
         override fun execute(command: Runnable) {
-            tasks.addLast(command)
+            if (accepting) tasks.addLast(command)
         }
 
         fun runNext() = tasks.removeFirst().run()
@@ -207,7 +208,6 @@ class ProjectionFrameSourceTest {
             assertEquals(1, stale.closes)
             assertEquals(0, stale.reads)
             reader.deliver(FakeFrame(0xFF222222.toInt()))
-            yield()
             reader.deliver(FakeFrame(0xFF333333.toInt()))
             reader.deliver(FakeFrame(0xFF444444.toInt()))
             taken.await()
@@ -253,7 +253,6 @@ class ProjectionFrameSourceTest {
         val bitmap = runBlocking {
             val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
             reader.deliver(FakeFrame(0xFF111111.toInt()))
-            yield()
             reader.deliver(FakeFrame(0xFF222222.toInt()))
             reader.deliver(FakeFrame(0xFF333333.toInt()))
             taken.await()
@@ -275,7 +274,7 @@ class ProjectionFrameSourceTest {
         val reader = environment.readers.single()
         val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
         reader.deliver(FakeFrame(0xFF111111.toInt()))
-
+        yield()
         taken.cancelAndJoin()
 
         assertTrue(converted.all { it.isRecycled })
@@ -297,6 +296,7 @@ class ProjectionFrameSourceTest {
             runCatching { source.takeSettled() }.exceptionOrNull()
         }
         reader.deliver(FakeFrame(0xFF111111.toInt()))
+        yield()
         environment.registered!!.onStopped()
 
         assertTrue(taken.await() is IllegalStateException)
@@ -599,5 +599,47 @@ class ProjectionFrameSourceTest {
         assertEquals(0xFFBBBBBB.toInt(), next.await().getPixel(0, 0))
         source.close()
         executor.runAll()
+    }
+
+    @Test
+    fun cancellationAndCloseRecycleSettledBitmapBeforeExecutorShutdown() = runTest {
+        val executor = QueuedExecutor()
+        val queuedEnvironment = FakeEnvironment(executor)
+        val converted = mutableListOf<android.graphics.Bitmap>()
+        val source = newSource(environment = queuedEnvironment) { buffer, width, height, pixelStride, rowStride ->
+            rgbaToBitmap(buffer, width, height, pixelStride, rowStride).also(converted::add)
+        }
+        executor.runAll()
+        val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
+        executor.runAll()
+        queuedEnvironment.readers.single().deliver(FakeFrame(0xFF112233.toInt()))
+        executor.runAll()
+        runCurrent()
+        taken.cancel()
+        source.close()
+        executor.runAll()
+        executor.accepting = false
+        runCurrent()
+
+        assertEquals(1, converted.size)
+        assertTrue(converted.single().isRecycled)
+        assertEquals(1, queuedEnvironment.releases)
+    }
+
+    @Test
+    fun continuousFramesDoNotExtendTheSettleDeadline() = runTest {
+        val source = newSource(settleWindowMs = 25)
+        val reader = environment.readers.single()
+        val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
+        reader.deliver(FakeFrame(0xFF111111.toInt()))
+        repeat(4) {
+            testScheduler.advanceTimeBy(5)
+            reader.deliver(FakeFrame(0xFF222222.toInt()))
+        }
+        testScheduler.advanceTimeBy(5)
+        runCurrent()
+        assertTrue(taken.isCompleted)
+        assertEquals(0xFF222222.toInt(), taken.await().getPixel(0, 0))
+        source.close()
     }
 }
