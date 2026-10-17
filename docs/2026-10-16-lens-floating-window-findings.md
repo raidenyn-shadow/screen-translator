@@ -1,5 +1,18 @@
 # ColorOS Lens floating-window handoff
 
+## v0.8.1 change — device validation pending
+
+The capture-mode root now submits `ACTION_TRANSLATE` and removes its task before
+capture. The sharing service waits for a fresh frame and retains the newest
+bitmap over a fixed 750 ms settling window, then saves and launches the fullscreen
+relay. The Lens request and screenshot-grant contract remain unchanged.
+
+Relay admission now relies on the UID's recent-visible-activity background-launch
+grace period (approximately 10 seconds in AOSP), rather than a visible app window.
+ColorOS behavior must be checked on-device: saved PNG free of floating frames,
+Lens fullscreen Translate with the image loaded, and no background-activity-launch
+denial in logcat. A short initial Sidebar frame flash may still be visible.
+
 ## Evidence
 
 Recovered the main text entry from the partial upload of

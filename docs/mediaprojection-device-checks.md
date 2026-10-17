@@ -17,6 +17,11 @@ each additional check.
 
 ## API 30 and API 33
 
+**v0.8.1:** the task now closes before settled capture; this ordering is pending
+physical-device validation. Verify the saved PNG contains no Screen Translator
+window or ColorOS floating frame and Lens opens fullscreen. Check device logs
+for background-activity-launch denial when the service starts the relay.
+
 Run every check on at least one Android 11/API 30 device and one Android 13/API
 33 device.
 

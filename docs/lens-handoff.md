@@ -34,9 +34,12 @@ contract; it is not Google's public image-translation API.
 
 ## Task and grant ownership
 
-1. `CaptureActivity` receives a saved screenshot while resumed.
-2. It removes its entire Sidebar capture task, then starts the transparent relay
-   from `ScreenCaptureService` with a fullscreen request and `NEW_TASK`.
+1. The transparent capture-mode `SetupActivity` submits `ACTION_TRANSLATE` to
+   `ScreenCaptureService` and removes its entire Sidebar task.
+2. The service waits for a fresh frame, retaining the newest image over a 750 ms
+   settling window, saves it, and starts the transparent relay with fullscreen
+   options, `NEW_TASK`, and `EXCLUDE_FROM_RECENTS`. Results and failure toasts are
+   handled on main. This v0.8.1 ordering is pending device validation.
 3. The relay grants read access to the Google app and starts the Lens intent for
    a result. Intent flags and ClipData carry the grant through Android's activity
    launch path; the explicit grant alone was insufficient on the tested device.

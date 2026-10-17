@@ -16,8 +16,8 @@ tracked in the [device checklist](docs/mediaprojection-device-checks.md).
 
 ## Install
 
-Download `screen-translator-0.8.apk` from
-[GitHub Releases](https://github.com/raidenyn-shadow/screen-translator/releases/tag/v0.8).
+Download `screen-translator-0.8.1.apk` from
+[GitHub Releases](https://github.com/raidenyn-shadow/screen-translator/releases/tag/v0.8.1).
 It is a non-debuggable release build signed with the existing app certificate,
 so it can be installed over earlier versions.
 
@@ -51,11 +51,17 @@ distributing it. Signing keys are kept outside the repository.
 
 ## Launch behavior
 
-- A **Smart Sidebar** tap captures the screen while sharing is active and opens
+- A **Smart Sidebar** tap submits `ACTION_TRANSLATE` to the sharing service and
+  closes the app's task first. The service captures the settled screen and opens
   the image in Lens Translate. If sharing is not active, the first tap requests
   consent and then performs its pending capture after the session starts.
 - Opening the app's **icon** from the home screen or app drawer opens the setup
   screen as a settings page. It stays open even when the service is ready.
+
+ColorOS may briefly show its floating frame while the Sidebar task opens. The
+v0.8.1 flow removes the task before capturing and keeps the newest frame during
+a 750 ms settling window. Saved-PNG frame removal and the new service-to-Lens
+launch timing are pending physical-device validation.
 
 Sidebar launches are recognized through the `from_package` extra ColorOS adds
 (observed as `com.coloros.smartsidebar` on a OnePlus PYB110 running Android 17).
