@@ -4,11 +4,13 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -30,10 +32,17 @@ class ProjectionFrameSourceTest {
 
     private fun newSource(
         timeoutMs: Long = 2_000,
+        settleWindowMs: Long = 25,
         environment: FakeEnvironment = this.environment,
         bitmapConverter: ((ByteBuffer, Int, Int, Int, Int) -> android.graphics.Bitmap)? = null,
     ): ProjectionFrameSource =
-        ProjectionFrameSource(environment, timeoutMs = timeoutMs, onStopped = { stopSignals++ }, bitmapConverter = bitmapConverter ?: ::rgbaToBitmap)
+        ProjectionFrameSource(
+            environment,
+            timeoutMs = timeoutMs,
+            settleWindowMs = settleWindowMs,
+            onStopped = { stopSignals++ },
+            bitmapConverter = bitmapConverter ?: ::rgbaToBitmap,
+        )
 
     /** 2x2 RGBA frame with 12-byte rows in one flat color; [reads] and [closes] witness its lifecycle. */
     private class FakeFrame(private val argb: Int) : FrameImage {
@@ -208,6 +217,115 @@ class ProjectionFrameSourceTest {
         assertEquals(2, bitmap.height)
         for (x in 0..1) for (y in 0..1) assertEquals(0xFF222222.toInt(), bitmap.getPixel(x, y))
         source.close()
+    }
+
+    @Test
+    fun takeSettledDiscardsQueuedFramesAndReturnsNewestAfterSettleWindow() {
+        val source = newSource()
+        val reader = environment.readers.single()
+        val stale = FakeFrame(0xFF111111.toInt())
+        reader.offer(stale)
+
+        val bitmap = runBlocking {
+            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
+            assertEquals(1, stale.closes)
+            assertEquals(0, stale.reads)
+            reader.deliver(FakeFrame(0xFF222222.toInt()))
+            yield()
+            reader.deliver(FakeFrame(0xFF333333.toInt()))
+            reader.deliver(FakeFrame(0xFF444444.toInt()))
+            taken.await()
+        }
+
+        assertEquals(0xFF444444.toInt(), bitmap.getPixel(0, 0))
+        source.close()
+    }
+
+    @Test
+    fun takeSettledKeepsFirstFrameWhenNothingNewerArrives() {
+        val source = newSource()
+        val reader = environment.readers.single()
+
+        val bitmap = runBlocking {
+            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
+            reader.deliver(FakeFrame(0xFF222222.toInt()))
+            taken.await()
+        }
+
+        assertEquals(0xFF222222.toInt(), bitmap.getPixel(0, 0))
+        source.close()
+    }
+
+    @Test
+    fun takeSettledTimesOutWhenNoFrameArrives() {
+        val source = newSource(timeoutMs = 100)
+
+        val error = runCatching { runBlocking { source.takeSettled() } }.exceptionOrNull()
+
+        assertTrue(error is IllegalStateException)
+        source.close()
+    }
+
+    @Test
+    fun takeSettledRecyclesReplacedCandidates() {
+        val converted = mutableListOf<android.graphics.Bitmap>()
+        val source = newSource { buffer, width, height, pixelStride, rowStride ->
+            rgbaToBitmap(buffer, width, height, pixelStride, rowStride).also(converted::add)
+        }
+        val reader = environment.readers.single()
+
+        val bitmap = runBlocking {
+            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
+            reader.deliver(FakeFrame(0xFF111111.toInt()))
+            yield()
+            reader.deliver(FakeFrame(0xFF222222.toInt()))
+            reader.deliver(FakeFrame(0xFF333333.toInt()))
+            taken.await()
+        }
+
+        assertEquals(0xFF333333.toInt(), bitmap.getPixel(0, 0))
+        assertTrue(converted[0].isRecycled)
+        assertTrue(converted[1].isRecycled)
+        assertTrue(!converted[2].isRecycled)
+        source.close()
+    }
+
+    @Test
+    fun takeSettledCancellationDuringSettleRecyclesCandidatesAndAllowsNextCapture() = runBlocking {
+        val converted = mutableListOf<android.graphics.Bitmap>()
+        val source = newSource { buffer, width, height, pixelStride, rowStride ->
+            rgbaToBitmap(buffer, width, height, pixelStride, rowStride).also(converted::add)
+        }
+        val reader = environment.readers.single()
+        val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
+        reader.deliver(FakeFrame(0xFF111111.toInt()))
+
+        taken.cancelAndJoin()
+
+        assertTrue(converted.all { it.isRecycled })
+
+        val next = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
+        reader.deliver(FakeFrame(0xFF222222.toInt()))
+        assertEquals(0xFF222222.toInt(), next.await().getPixel(0, 0))
+        source.close()
+    }
+
+    @Test
+    fun stopDuringSettleFailsTheCaptureAndRecyclesTheCandidate() = runBlocking {
+        val converted = mutableListOf<android.graphics.Bitmap>()
+        val source = newSource { buffer, width, height, pixelStride, rowStride ->
+            rgbaToBitmap(buffer, width, height, pixelStride, rowStride).also(converted::add)
+        }
+        val reader = environment.readers.single()
+        val taken = async(start = CoroutineStart.UNDISPATCHED) {
+            runCatching { source.takeSettled() }.exceptionOrNull()
+        }
+        reader.deliver(FakeFrame(0xFF111111.toInt()))
+        environment.registered!!.onStopped()
+
+        assertTrue(taken.await() is IllegalStateException)
+        assertEquals(1, stopSignals)
+        assertTrue(converted.all { it.isRecycled })
     }
 
     @Test
