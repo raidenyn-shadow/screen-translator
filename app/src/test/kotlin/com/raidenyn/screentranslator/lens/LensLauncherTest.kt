@@ -31,7 +31,11 @@ class LensLauncherTest {
         assertEquals(uri, IntentCompat.getParcelableExtra(intent, EXTRA_INJECTED_IMAGE_URI, Uri::class.java))
         assertEquals("translate", intent.getStringExtra(EXTRA_OPEN_FILTER))
         assertEquals(caller, intent.getStringExtra(EXTRA_CALLER_PACKAGE))
-        // The contract launches for a result without forcing a new task.
+        // The installed build reaches the image/filter parsing only when the
+        // history bit is set; without it LensExportedActivity crashes with
+        // "Launch mode only supported for shortcuts." before reading extras.
+        assertTrue(intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0)
+        // The request still launches for a result without forcing a new task.
         assertTrue(intent.flags and Intent.FLAG_ACTIVITY_NEW_TASK == 0)
     }
 

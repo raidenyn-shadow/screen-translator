@@ -235,7 +235,7 @@ other Google entry point has the same gate; the previously working share entry
 point remains a distinct flow and did not establish forced translation mode.
 No application behavior change or new APK release was made from this analysis.
 
-## v0.7.5 route — explicit LensExportedActivity request
+## v0.7.5 route — explicit LensExportedActivity request (failed; corrected below)
 
 Further exact-build analysis found a second, un-gated request path in the same
 base APK:
@@ -269,3 +269,54 @@ Whether this route visibly translates, reuses Google Translate preferences or
 offline packs, and preserves fullscreen presentation still requires
 physical-device verification; a server-side or downstream check not visible in
 static analysis remains possible.
+
+## v0.7.5 crash — correction to launch-mode analysis
+
+The report `bugreport-PYB110-CP2A.260605.016-2026-10-17-10-30-58.txt`
+supersedes the launch-mode claim above. At 10:30:50.274 (line 40183), Android
+accepts our explicit Lens request for result and inherits fullscreen. At
+10:30:50.357 (lines 40401–40427), Google's `:googleapp` process crashes during
+`LensExportedActivity.onCreate`:
+
+```text
+Caused by: java.lang.IllegalStateException: Launch mode only supported for shortcuts.
+    at dufz.a(PG:247)
+    at dufz.b(PG:4)
+    at ctgj.onCreate(PG:125)
+```
+
+The same exception appears repeatedly at 10:29:09, 10:29:16, 10:29:40, and
+10:29:44. This is a Google process crash before image/filter parsing, not an
+observed screenshot decode failure or another eligibility-result rejection.
+
+JADX's **fallback** output for `dufz.a`, checked against this crash, shows that
+the structured decompile used for v0.7.5 reversed the relevant branch:
+
+- Both `LensExportedActivity` and `DummyExportedActivity` enter label `Lb2`.
+- The tested bit is **0x00100000**, Android's
+  `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY`. It is **not** `FLAG_ACTIVITY_NEW_TASK`
+  (**0x10000000**). These constants were verified using SDK 36 `javap -constants`.
+- If the history bit is absent, label `Ldc` requires an extra named
+  `LensHomescreenShortcut` and exactly **one** extra in total; otherwise label
+  `Lf2` throws the observed exception. Adding that shortcut extra alongside our
+  image and filter would still fail the extras-count check.
+- If the history bit is present, no data URI returns mode **2**. A data URI
+  with scheme/host `google://lens` or `google://lensient` returns mode **5**;
+  other scheme/host combinations return mode **2**.
+
+Therefore the v0.7.5 assertion that an explicit component with no data and no
+flags immediately enters mode 2 was incorrect. The actual crash is fully
+explained by the missing history bit and the non-shortcut extras. The image and
+filter parsers exist, but v0.7.5 never reaches them.
+
+A possible narrowly scoped follow-up experiment is the explicit component with
+the existing image/filter extras, no data URI, and the history bit set, still
+without `NEW_TASK` on the inner request. This is a private launch convention
+normally used for history launches, not a documented general image-translation
+API. Whether Android preserves that bit and whether Lens completes the remaining
+flow would require physical-device validation.
+
+v0.7.6 implements exactly that experiment: `translateRequest` now adds
+`FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY` to the unchanged v0.7.5 request. Whether
+Android preserves the bit across the relay's for-result start, and whether Lens
+then completes the image/filter flow, requires physical-device validation.

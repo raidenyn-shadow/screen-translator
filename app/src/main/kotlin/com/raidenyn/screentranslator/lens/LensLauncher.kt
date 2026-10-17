@@ -19,11 +19,17 @@ internal const val EXTRA_CALLER_PACKAGE = "caller_package"
  * mode runs the direct-intent caller-eligibility gate that rejected v0.7.4 with
  * "Lens eligibility error" (result 1). The explicit-component request parses in
  * that same build as integration mode 2, which reads `injected_image_uri` and
- * `open_filter` and skips the eligibility gate. Started for a result without a
- * new task; visible translation still requires device verification.
+ * `open_filter` and skips the eligibility gate.
+ *
+ * That build's `dufz.a` also requires `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY` for
+ * this component: without it, LensExportedActivity crashed on device with
+ * "Launch mode only supported for shortcuts." before reading any extras
+ * (bugreport 2026-10-17-10-30-58). Started for a result without a new task;
+ * visible translation still requires device verification.
  */
 fun translateRequest(uri: Uri, callerPackage: String): Intent =
     Intent().setComponent(ComponentName(GSA_PACKAGE, LENS_EXPORTED_ACTIVITY))
+        .addFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY)
         .putExtra(EXTRA_INJECTED_IMAGE_URI, uri)
         .putExtra(EXTRA_OPEN_FILTER, "translate")
         .putExtra(EXTRA_CALLER_PACKAGE, callerPackage)
