@@ -15,8 +15,8 @@ import com.raidenyn.screentranslator.capture.CaptureError
 import com.raidenyn.screentranslator.capture.CaptureResult
 import com.raidenyn.screentranslator.lens.fullscreenOptions
 import com.raidenyn.screentranslator.service.ScreenCaptureService
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
 
 /** Empty translucent owner for one capture request and its visible Lens handoff. */
 class CaptureActivity : ComponentActivity() {
@@ -47,10 +47,6 @@ class CaptureActivity : ComponentActivity() {
         }
     }
 
-    override fun onPause() {
-        super.onPause()
-    }
-
     override fun onDestroy() {
         if (!isChangingConfigurations && !consumed) cancel()
         if (active != null) active = null
@@ -68,20 +64,17 @@ class CaptureActivity : ComponentActivity() {
         if (consumed) return
         if (!requested) requested = service.requests.request(requestId)
         when (val result = service.requests.results.value[requestId]) {
-            is CaptureResult.Saved -> launchLens(service, result)
+            is CaptureResult.Saved -> launchTranslation(service, result)
             is CaptureResult.Failed -> fail(service, result.error)
             null -> Unit
         }
     }
 
-    private fun launchLens(service: ScreenCaptureService, result: CaptureResult.Saved) {
+    private fun launchTranslation(service: ScreenCaptureService, result: CaptureResult.Saved) {
         if (consumed || !lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return
         consumed = true
-        // v0.6.1 closed its Sidebar activity before the service launched Lens. Remove
-        // this whole task (including the root), rather than leaving it available to
-        // ColorOS's source-task fallback through the calling process. The fresh relay
-        // task then supplies the direct Lens request a real activity caller and result
-        // channel, matching the OEM screenshot-translation contract.
+        // Remove the Sidebar task before starting a fullscreen relay so ColorOS cannot
+        // reuse its floating-window mode. The relay owns Lens's activity result channel.
         val relay = TranslateRelayActivity.intent(service, result.uri)
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
         val launched = removeCaptureTask() && startRelay(service, relay)

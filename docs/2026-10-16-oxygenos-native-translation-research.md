@@ -1,5 +1,10 @@
 # OxygenOS screenshot-translation handoff
 
+**Outcome:** the user confirmed v0.7.7 works on the tested phone after the
+intent-carried URI grant fix. Version 0.8 retains that handoff. This document is
+the chronological investigation, including superseded hypotheses; the concise
+current contract is in [lens-handoff.md](lens-handoff.md).
+
 ## Required outcome
 
 One Sidebar tap must capture the current screen and show its translation in the

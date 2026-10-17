@@ -14,28 +14,15 @@ internal const val EXTRA_OPEN_FILTER = "open_filter"
 internal const val EXTRA_CALLER_PACKAGE = "caller_package"
 
 /**
- * The installed Google app's exported Lens component, addressed explicitly with the
- * screenshot URI and translate filter as intent extras and no `google://lens` data
- * URI. The data-URI request resolved to the MainActivity alias, whose integration
- * mode runs the direct-intent caller-eligibility gate that rejected v0.7.4 with
- * "Lens eligibility error" (result 1). The explicit-component request parses in
- * that same build as integration mode 2, which reads `injected_image_uri` and
- * `open_filter` and skips the eligibility gate.
- *
- * That build's `dufz.a` also requires `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY` for
- * this component: without it, LensExportedActivity crashed on device with
- * "Launch mode only supported for shortcuts." before reading any extras
- * (bugreport 2026-10-17-10-30-58).
- *
- * The screenshot grant travels on the intent itself (`FLAG_GRANT_READ_URI_PERMISSION`
- * plus a ClipData holding the URI) exactly as in the user-verified share flow: with
- * only a context-API `grantUriPermission`, Lens was denied reading the provider on
- * device and closed immediately (bugreport 2026-10-17-11-02-06). Started for a
- * result without a new task; visible translation still requires device verification.
+ * Opens a captured screenshot directly in Lens Translate. Device-verified with
+ * Google 17.64.15.ve.arm64; see docs/lens-handoff.md for the private intent contract.
+ * Must be started from an activity without NEW_TASK to retain the result channel.
  */
 fun translateRequest(uri: Uri, callerPackage: String): Intent = Intent().apply {
     setComponent(ComponentName(GSA_PACKAGE, LENS_EXPORTED_ACTIVITY))
+    // The history bit selects the image/filter entry mode instead of the shortcut-only guard.
     addFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    // ClipData makes the URI visible to Android's activity-launch permission machinery.
     clipData = ClipData.newRawUri("screenshot", uri)
     putExtra(EXTRA_INJECTED_IMAGE_URI, uri)
     putExtra(EXTRA_OPEN_FILTER, "translate")

@@ -12,10 +12,8 @@ import com.raidenyn.screentranslator.lens.GSA_PACKAGE
 import com.raidenyn.screentranslator.lens.translateRequest
 
 /**
- * Transparent relay giving Google's direct Lens request a real activity caller and a
- * result channel, matching the OEM contract recovered from OxygenOS's Screenshot app:
- * the request is started for a result without FLAG_ACTIVITY_NEW_TASK. The relay owns
- * the temporary read grant for the captured screenshot and revokes it once Lens answers.
+ * Transparent owner of a Lens translation request and its temporary screenshot grant.
+ * Keeps one request alive across configuration changes and releases access when it ends.
  */
 class TranslateRelayActivity : Activity() {
 
@@ -63,8 +61,7 @@ class TranslateRelayActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != REQUEST_LENS) return
         if (resultCode != RESULT_OK) {
-            // The OEM contract treats every non--1 answer as Lens being unavailable
-            // to this caller; -1 means the request was served.
+            // Lens reports a served request with RESULT_OK.
             Toast.makeText(this, R.string.error_launch_failed, Toast.LENGTH_SHORT).show()
         }
         releaseGrant()

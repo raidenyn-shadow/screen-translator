@@ -1,7 +1,7 @@
 # Screen Translator
 
 One tap from the ColorOS **Smart Sidebar** captures the visible screen and opens
-the screenshot in **Google Lens**. Select **Translate** manually in Lens.
+its translation in **Google Lens** automatically.
 
 ## Requirements
 
@@ -9,14 +9,17 @@ the screenshot in **Google Lens**. Select **Translate** manually in Lens.
 - The Google app installed with Google Lens available.
 - Permission to share the screen when Android asks.
 
-On a OnePlus PYB110 running Android 17 with Google app
-`17.64.15.ve.arm64`, the user verified ColorOS Smart Sidebar launch routing and
-Google Lens availability. MediaProjection capture behavior remains unverified on
-a physical device; see the device checklist below.
+The user confirmed the capture-to-translation flow works on a OnePlus PYB110
+running Android 17 with Google app `17.64.15.ve.arm64` (Screen Translator
+v0.7.7, the handoff retained in v0.8). Other device and lifecycle checks are
+tracked in the [device checklist](docs/mediaprojection-device-checks.md).
 
 ## Install
 
-Download the APK from [GitHub Releases](https://github.com/raidenyn-shadow/screen-translator/releases).
+Download `screen-translator-0.8.apk` from
+[GitHub Releases](https://github.com/raidenyn-shadow/screen-translator/releases/tag/v0.8).
+It is a non-debuggable release build signed with the existing app certificate,
+so it can be installed over earlier versions.
 
 To build locally:
 
@@ -25,6 +28,16 @@ JAVA_HOME=$JAVA_ROOT/zulu21 ./gradlew :app:assembleDebug
 ```
 
 APK: `app/build/outputs/apk/debug/app-debug.apk`.
+
+For the release variant:
+
+```bash
+JAVA_HOME=$JAVA_ROOT/zulu21 ./gradlew :app:assembleRelease
+```
+
+This produces `app/build/outputs/apk/release/app-release-unsigned.apk`.
+Sign it with Android SDK `apksigner` and the existing installation's key before
+distributing it. Signing keys are kept outside the repository.
 
 ## Setup
 
@@ -39,8 +52,8 @@ APK: `app/build/outputs/apk/debug/app-debug.apk`.
 ## Launch behavior
 
 - A **Smart Sidebar** tap captures the screen while sharing is active and opens
-  the image in Lens. If sharing is not active, the first tap requests consent and
-  then performs its pending capture after the session starts.
+  the image in Lens Translate. If sharing is not active, the first tap requests
+  consent and then performs its pending capture after the session starts.
 - Opening the app's **icon** from the home screen or app drawer opens the setup
   screen as a settings page. It stays open even when the service is ready.
 
@@ -59,8 +72,14 @@ skip the source-routing code.
 
 After you approve Android's sharing prompt, screen sharing stays active for that
 live session. Each Sidebar tap captures a fresh screen, saves it in private cache,
-and opens it in Lens. Select **Translate** manually; the app does not control the
-Lens interface.
+and opens it directly in Lens Translate. No gallery import or manual Translate
+selection is needed. The native Lens interface owns translation and language
+selection; the app does not automate taps.
+
+The handoff uses the installed Google app's private exported activity contract.
+See [Lens handoff](docs/lens-handoff.md) for the working request and device
+validation. Reuse of Google Translate's own preferences and downloaded offline
+packs has not been separately established.
 
 Stop sharing with **Stop screen sharing** in the app, the **Stop sharing** action
 in the ongoing notification, or Android's system sharing controls. Android can
@@ -87,10 +106,10 @@ app will allow screen sharing or capture.
 ## Development checks
 
 ```bash
-JAVA_HOME=$JAVA_ROOT/zulu21 ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+JAVA_HOME=$JAVA_ROOT/zulu21 ./gradlew :app:testDebugUnitTest :app:testReleaseUnitTest :app:assembleRelease :app:lintRelease
 ```
 
 Unit tests cover screenshot storage, projection-frame handling, request lifecycle,
-Lens sharing, cancellation, timeout behavior, and session lifecycle. Physical
-device validation is tracked in
+Lens translation requests, cancellation, timeout behavior, and session lifecycle.
+Physical device validation is tracked in
 [`docs/mediaprojection-device-checks.md`](docs/mediaprojection-device-checks.md).

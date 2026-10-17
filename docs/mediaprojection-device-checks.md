@@ -4,9 +4,16 @@ Robolectric does not exercise Android's real MediaProjection consent UI, OEM
 sharing choices, ImageReader behavior, or translucent-window capture. Run these
 checks on physical devices before release.
 
-**Status:** all physical-device checks below are **UNRUN**. Record the device,
-Android version, build, Google app version, observed result, and evidence when a
-check is performed.
+**Confirmed core flow:** on 2026-10-17, the user reported that v0.7.7 works after
+the intent-carried screenshot grant fix: a Sidebar tap captures the screen and
+opens its translation in Lens. Device: OnePlus PYB110, Android 17, Google app
+`17.64.15.ve.arm64` (versionCode 301817218). Version 0.8 retains that handoff.
+
+The individual lifecycle and cross-version checks below remain **UNRUN** unless
+explicitly recorded. The core-flow confirmation does not establish every consent,
+rotation, stop/restart, offline, or language-preference case. Record the device,
+Android version, build, Google app version, observed result, and evidence for
+each additional check.
 
 ## API 30 and API 33
 

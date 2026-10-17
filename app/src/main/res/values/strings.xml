@@ -18,6 +18,6 @@
     <string name="setup_stop_sharing">Stop screen sharing</string>
     <string name="setup_battery_settings">Battery settings</string>
     <string name="setup_how_to_title">How to use it</string>
-    <string name="setup_how_to">1. Add the app to Smart Sidebar (Settings → Smart Sidebar → customize).\n2. Pin/lock the app in recents so ColorOS keeps it running.\n3. Start screen sharing for this session. A sidebar tap captures the screen and opens Google Lens. Select Translate manually in Lens.\n4. Opening the app\'s icon from the home screen or app drawer shows this settings page.</string>
-    <string name="setup_sharing_description">Screen sharing permission is requested for each session. Screenshots open in Google Lens, where you can select Translate manually.</string>
+    <string name="setup_how_to">1. Add the app to Smart Sidebar (Settings → Smart Sidebar → customize).\n2. Pin/lock the app in recents so ColorOS keeps it running.\n3. Start screen sharing for this session. A sidebar tap captures the screen and opens its translation in Google Lens automatically.\n4. Opening the app\'s icon from the home screen or app drawer shows this settings page.</string>
+    <string name="setup_sharing_description">Screen sharing permission is requested for each session. Screenshots open directly in Google Lens Translate.</string>
 </resources>
