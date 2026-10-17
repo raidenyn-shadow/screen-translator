@@ -109,9 +109,8 @@ class ReusedLaunchTest {
         val captureRoot = root.get()
         assertTrue(isTranslucent(captureRoot))
         assertEquals(0, contentChildren(captureRoot))
-        val launch = shadow(captureRoot).nextStartedActivityForResult ?: error("no capture child opened")
-        assertEquals(ComponentName(context, CaptureActivity::class.java), launch.intent.component)
-        assertNotNull(launch.intent.getStringExtra(CaptureActivity.EXTRA_REQUEST_ID))
+        assertEquals(ScreenCaptureService.ACTION_TRANSLATE, Shadows.shadowOf(app).nextStartedService?.action)
+        assertNull(shadow(captureRoot).peekNextStartedActivityForResult())
     }
 
     @Test fun iconIntentCancelsAnOlderPendingSidebarCaptureAcrossRecreation() {

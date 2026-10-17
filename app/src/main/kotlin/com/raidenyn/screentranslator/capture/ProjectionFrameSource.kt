@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-/** Bounded wait for a fresh frame before [ProjectionFrameSource.take] fails. */
+/** Bounded wait for a fresh frame before [ProjectionFrameSource.takeSettled] fails. */
 internal const val FRAME_TIMEOUT_MS = 5_000L
 
 /** Time after the first fresh frame during which newer frames replace it. */
@@ -87,8 +87,8 @@ internal interface ProjectionEnvironment {
 
 /**
  * Screenshot taker over one consented MediaProjection: a single auto-mirroring display
- * whose reader is drained while idle. [take] drops queued frames, waits for one delivered
- * after the request and converts it to a software bitmap, failing on its own timeout.
+ * whose reader is drained while idle. [takeSettled] drops queued frames, waits for one
+ * fresh image and retains the newest software bitmap through the settling window.
  * Geometry changes replace the reader but reuse the display; revocation and [close]
  * converge on one cleanup that signals [onStopped] only for revocation.
  */
@@ -98,7 +98,7 @@ internal class ProjectionFrameSource internal constructor(
     private val settleWindowMs: Long = SETTLE_WINDOW_MS,
     private val onStopped: () -> Unit,
     private val bitmapConverter: (ByteBuffer, Int, Int, Int, Int) -> Bitmap = ::rgbaToBitmap,
-) : ScreenshotTaker, AutoCloseable {
+) : AutoCloseable {
 
     constructor(context: Context, projection: MediaProjection, onStopped: () -> Unit) : this(
         MediaProjectionEnvironment(context, projection),
@@ -133,18 +133,6 @@ internal class ProjectionFrameSource internal constructor(
 
     /** Completes only when this source has attached its one reader/display pair. */
     internal suspend fun awaitReady() = readiness.await()
-
-    override suspend fun take(): Bitmap {
-        check(!closed.get()) { "frame source is closed" }
-        val frame = withTimeoutOrNull(timeoutMs) {
-            suspendCancellableCoroutine<Bitmap> { continuation ->
-                val slot = PendingCapture(continuation)
-                continuation.invokeOnCancellation { executor.execute { cancelSlot(slot) } }
-                executor.execute { arm(slot) }
-            }
-        }
-        return frame ?: throw IllegalStateException("no fresh frame within $timeoutMs ms")
-    }
 
     suspend fun takeSettled(): Bitmap {
         check(!closed.get()) { "frame source is closed" }

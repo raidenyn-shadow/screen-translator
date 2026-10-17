@@ -196,30 +196,6 @@ class ProjectionFrameSourceTest {
     }
 
     @Test
-    fun takeDiscardsQueuedFramesAndWaitsForFreshImage() {
-        val source = newSource()
-        val reader = environment.readers.single()
-        val stale = FakeFrame(0xFF111111.toInt())
-        reader.offer(stale)
-        val fresh = FakeFrame(0xFF222222.toInt())
-
-        val bitmap = runBlocking {
-            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.take() }
-            assertEquals(1, stale.closes)
-            assertEquals(0, stale.reads)
-            reader.deliver(fresh)
-            taken.await()
-        }
-
-        assertEquals(1, fresh.reads)
-        assertEquals(1, fresh.closes)
-        assertEquals(2, bitmap.width)
-        assertEquals(2, bitmap.height)
-        for (x in 0..1) for (y in 0..1) assertEquals(0xFF222222.toInt(), bitmap.getPixel(x, y))
-        source.close()
-    }
-
-    @Test
     fun takeSettledDiscardsQueuedFramesAndReturnsNewestAfterSettleWindow() {
         val source = newSource()
         val reader = environment.readers.single()
@@ -329,28 +305,17 @@ class ProjectionFrameSourceTest {
     }
 
     @Test
-    fun missingFrameTimesOutAfter5000ms() {
-        assertEquals(5_000L, FRAME_TIMEOUT_MS)
-
-        val source = newSource(timeoutMs = 100)
-        val error = runCatching { runBlocking { source.take() } }.exceptionOrNull()
-
-        assertTrue(error is IllegalStateException)
-        source.close()
-    }
-
-    @Test
     fun outerTimeoutCancelsTakeInsteadOfFailingIt() {
         val source = newSource()
         val cancelled = runCatching {
-            runBlocking { withTimeout(50) { source.take() } }
+            runBlocking { withTimeout(50) { source.takeSettled() } }
         }.exceptionOrNull()
 
         assertTrue(cancelled is TimeoutCancellationException)
 
         val fresh = FakeFrame(0xFFAAAAAA.toInt())
         val bitmap = runBlocking {
-            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.take() }
+            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
             environment.readers.single().deliver(fresh)
             taken.await()
         }
@@ -362,7 +327,7 @@ class ProjectionFrameSourceTest {
     fun lateFrameAfterTimeoutDoesNotCompleteNextRequest() {
         val source = newSource(timeoutMs = 100)
         val reader = environment.readers.single()
-        runCatching { runBlocking { source.take() } }
+        runCatching { runBlocking { source.takeSettled() } }
 
         val late = FakeFrame(0xFF333333.toInt())
         reader.deliver(late)
@@ -370,12 +335,12 @@ class ProjectionFrameSourceTest {
         assertEquals(1, late.closes)
         assertEquals(0, late.reads)
 
-        val second = runCatching { runBlocking { source.take() } }.exceptionOrNull()
+        val second = runCatching { runBlocking { source.takeSettled() } }.exceptionOrNull()
         assertTrue(second is IllegalStateException)
 
         val fresh = FakeFrame(0xFF444444.toInt())
         val bitmap = runBlocking {
-            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.take() }
+            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
             reader.deliver(fresh)
             taken.await()
         }
@@ -391,7 +356,7 @@ class ProjectionFrameSourceTest {
         val broken = UnreadableFrame()
 
         val failed = runBlocking {
-            val taken = async(start = CoroutineStart.UNDISPATCHED) { runCatching { source.take() }.exceptionOrNull() }
+            val taken = async(start = CoroutineStart.UNDISPATCHED) { runCatching { source.takeSettled() }.exceptionOrNull() }
             reader.deliver(broken)
             taken.await()
         }
@@ -401,7 +366,7 @@ class ProjectionFrameSourceTest {
 
         val fresh = FakeFrame(0xFFC0C0C0.toInt())
         val bitmap = runBlocking {
-            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.take() }
+            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
             reader.deliver(fresh)
             taken.await()
         }
@@ -435,7 +400,7 @@ class ProjectionFrameSourceTest {
 
         val fresh = FakeFrame(0xFF666666.toInt())
         val bitmap = runBlocking {
-            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.take() }
+            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
             replacement.deliver(fresh)
             taken.await()
         }
@@ -455,7 +420,7 @@ class ProjectionFrameSourceTest {
 
         val fresh = FakeFrame(0xFF0B0B0B.toInt())
         val bitmap = runBlocking {
-            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.take() }
+            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
             environment.readers.single().deliver(fresh)
             taken.await()
         }
@@ -471,7 +436,7 @@ class ProjectionFrameSourceTest {
         assertEquals(1, environment.readers.single().closes)
         assertNull(environment.screen)
 
-        val error = runCatching { runBlocking { source.take() } }.exceptionOrNull()
+        val error = runCatching { runBlocking { source.takeSettled() } }.exceptionOrNull()
         assertTrue(error is IllegalStateException)
         source.close()
     }
@@ -555,7 +520,7 @@ class ProjectionFrameSourceTest {
         val screen = environment.screen!!
 
         val failed = runBlocking {
-            val taken = async(start = CoroutineStart.UNDISPATCHED) { runCatching { source.take() }.exceptionOrNull() }
+            val taken = async(start = CoroutineStart.UNDISPATCHED) { runCatching { source.takeSettled() }.exceptionOrNull() }
             environment.registered!!.onStopped()
             taken.await()
         }
@@ -580,7 +545,7 @@ class ProjectionFrameSourceTest {
         val reader = environment.readers.single()
 
         runBlocking {
-            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.take() }
+            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
             taken.cancel()
         }
 
@@ -592,7 +557,7 @@ class ProjectionFrameSourceTest {
 
         val fresh = FakeFrame(0xFF999999.toInt())
         val bitmap = runBlocking {
-            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.take() }
+            val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
             reader.deliver(fresh)
             taken.await()
         }
@@ -615,7 +580,7 @@ class ProjectionFrameSourceTest {
         executor.runNext()
         source.awaitReady()
         val dispatcher = StandardTestDispatcher(testScheduler)
-        val taken = async(dispatcher) { source.take() }
+        val taken = async(dispatcher) { source.takeSettled() }
         runCurrent()
         executor.runNext()
 
@@ -627,7 +592,7 @@ class ProjectionFrameSourceTest {
 
         assertTrue(converted!!.isRecycled)
 
-        val next = async(start = CoroutineStart.UNDISPATCHED) { source.take() }
+        val next = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
         executor.runNext()
         queuedEnvironment.readers.single().deliver(FakeFrame(0xFFBBBBBB.toInt()))
         executor.runNext()

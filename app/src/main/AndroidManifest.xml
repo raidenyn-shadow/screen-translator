@@ -29,11 +29,6 @@
             android:theme="@style/Theme.ScreenTranslator.Setup" />
 
         <activity
-            android:name=".ui.CaptureActivity"
-            android:exported="false"
-            android:theme="@style/Theme.ScreenTranslator.Capture" />
-
-        <activity
             android:name=".ui.TranslateRelayActivity"
             android:exported="false"
             android:theme="@style/Theme.ScreenTranslator.Capture"

@@ -1,6 +1,7 @@
 package com.raidenyn.screentranslator.ui
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.Application
 import android.content.ComponentName
 import android.content.Context
@@ -30,6 +31,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowActivity
+import org.robolectric.shadows.ShadowAppTask
 import org.robolectric.shadows.ShadowLooper
 import java.util.UUID
 
@@ -92,18 +94,22 @@ class TrampolineActivityTest {
         assertNull(shadow(root.get()).peekNextStartedActivityForResult())
     }
 
-    @Test fun sidebarTapWithLiveSessionOpensCaptureWithoutConsent() {
+    @Test fun sidebarTapWithLiveSessionSubmitsTranslationAndClosesItsTask() {
         boot = bootSession(testScope)
         val root = Robolectric.buildActivity(TrampolineActivity::class.java, sidebarIntent()).setup()
             .also { activities.add(it) }
+        val task = ShadowAppTask.newInstance().also {
+            Shadows.shadowOf(it).setTaskInfo(ActivityManager.RecentTaskInfo().apply { taskId = root.get().taskId })
+        }
+        Shadows.shadowOf(root.get().getSystemService(ActivityManager::class.java)).setAppTasks(listOf(task))
+        root.pause().resume()
         ShadowLooper.idleMainLooper()
 
         val captureRoot = root.get()
         assertTrue(isTranslucent(captureRoot))
-        assertFalse(captureRoot.isFinishing)
-        val launch = shadow(captureRoot).nextStartedActivityForResult ?: error("no capture child opened")
-        assertEquals(ComponentName(context, CaptureActivity::class.java), launch.intent.component)
-        assertNotNull(launch.intent.getStringExtra(CaptureActivity.EXTRA_REQUEST_ID))
+        assertEquals(ScreenCaptureService.ACTION_TRANSLATE, Shadows.shadowOf(app).nextStartedService?.action)
+        assertTrue(Shadow.extract<ShadowAppTask>(task).isFinishedAndRemoved)
+        assertNull(shadow(captureRoot).peekNextStartedActivityForResult())
     }
 
     @Test fun iconIntentSupersedesSidebarBeforeConsentReturns() {

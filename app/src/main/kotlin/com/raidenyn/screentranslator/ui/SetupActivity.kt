@@ -1,6 +1,7 @@
 package com.raidenyn.screentranslator.ui
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.content.Intent
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
@@ -20,24 +21,18 @@ import com.raidenyn.screentranslator.R
 import com.raidenyn.screentranslator.service.ScreenCaptureService
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
-import java.util.UUID
 
-/** Hosts opaque setup or an empty transparent root while a capture is handed to its child. */
+/** Hosts setup or a transparent root that submits translation and removes its task. */
 open class SetupActivity : ComponentActivity() {
 
     private var pendingCapture = false
     private var captureMode = false
-    private var requestId: String? = null
-    private var childLaunched = false
+    private var submitted = false
     private var awaitingSession = false
     private val consentState by viewModels<SetupConsentViewModel>()
 
     private val consent = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         consentResult(result.resultCode, result.data)
-    }
-
-    private val capture = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) finish() else if (!isFinishing) returnToSettings()
     }
 
     protected open fun captureRequested(intent: Intent): Boolean =
@@ -48,9 +43,7 @@ open class SetupActivity : ComponentActivity() {
             ?: intent.getBooleanExtra(EXTRA_CAPTURE_MODE, false)
         pendingCapture = savedInstanceState?.getBoolean(STATE_PENDING_CAPTURE)
             ?: captureRequested(intent)
-        requestId = savedInstanceState?.getString(STATE_REQUEST_ID)
-            ?: intent.getStringExtra(EXTRA_REQUEST_ID)
-        childLaunched = savedInstanceState?.getBoolean(STATE_CHILD_LAUNCHED) ?: false
+        submitted = savedInstanceState?.getBoolean(STATE_SUBMITTED) ?: false
         awaitingSession = savedInstanceState?.getBoolean(STATE_AWAITING_SESSION) ?: false
         setTheme(if (captureMode) R.style.Theme_ScreenTranslator_Capture else R.style.Theme_ScreenTranslator_Setup)
         super.onCreate(savedInstanceState)
@@ -89,7 +82,7 @@ open class SetupActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         when {
-            captureMode && !childLaunched -> launchCapture()
+            captureMode -> submitTranslation()
             !captureMode && pendingCapture && ScreenCaptureService.connection.value == null && !consentState.consentInFlight && !awaitingSession -> requestConsent()
             !captureMode && pendingCapture -> beginCapture()
         }
@@ -108,7 +101,6 @@ open class SetupActivity : ComponentActivity() {
         setIntent(intent)
         if (!captureRequested(intent)) {
             pendingCapture = false
-            CaptureActivity.cancelActiveCapture()
             if (captureMode) returnToSettings()
             return
         }
@@ -120,8 +112,7 @@ open class SetupActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean(STATE_PENDING_CAPTURE, pendingCapture)
         outState.putBoolean(STATE_CAPTURE_MODE, captureMode)
-        outState.putString(STATE_REQUEST_ID, requestId)
-        outState.putBoolean(STATE_CHILD_LAUNCHED, childLaunched)
+        outState.putBoolean(STATE_SUBMITTED, submitted)
         outState.putBoolean(STATE_AWAITING_SESSION, awaitingSession)
         super.onSaveInstanceState(outState)
     }
@@ -166,33 +157,38 @@ open class SetupActivity : ComponentActivity() {
 
     private fun beginCapture() {
         if (!pendingCapture || captureMode || ScreenCaptureService.connection.value == null) return
-        requestId = requestId ?: UUID.randomUUID().toString()
         captureMode = true
-        intent.putExtra(EXTRA_CAPTURE_MODE, true).putExtra(EXTRA_REQUEST_ID, requestId)
+        intent.putExtra(EXTRA_CAPTURE_MODE, true)
         recreate()
     }
 
-    private fun launchCapture() {
-        val id = requestId ?: run {
-            returnToSettings()
-            return
+    private fun submitTranslation() {
+        if (!submitted) {
+            if (ScreenCaptureService.connection.value == null) { returnToSettings(); return }
+            submitted = true
+            try { ScreenCaptureService.translate(this) }
+            catch (_: Throwable) { failToSettings(getString(R.string.error_session_failed)); return }
         }
-        if (ScreenCaptureService.connection.value == null) returnToSettings()
-        childLaunched = true
-        capture.launch(CaptureActivity.intent(this, id))
-        @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+        removeOwnTask()
+    }
+
+    private fun removeOwnTask() {
+        try {
+            getSystemService(ActivityManager::class.java).appTasks
+                .firstOrNull { it.taskInfo.taskId == taskId }?.finishAndRemoveTask()
+        } catch (_: IllegalArgumentException) {
+        } catch (_: SecurityException) {
+        }
     }
 
     private fun returnToSettings() {
         captureMode = false
         pendingCapture = false
-        requestId = null
-        childLaunched = false
+        submitted = false
         awaitingSession = false
         consentState.consentInFlight = false
         consentState.deferredConsent = null
         intent.removeExtra(EXTRA_CAPTURE_MODE)
-        intent.removeExtra(EXTRA_REQUEST_ID)
         recreate()
     }
 
@@ -204,11 +200,9 @@ open class SetupActivity : ComponentActivity() {
     companion object {
         const val EXTRA_PENDING_CAPTURE = "pending_capture"
         internal const val EXTRA_CAPTURE_MODE = "capture_mode"
-        internal const val EXTRA_REQUEST_ID = "request_id"
         private const val STATE_PENDING_CAPTURE = "pending_capture_state"
         private const val STATE_CAPTURE_MODE = "capture_mode_state"
-        private const val STATE_REQUEST_ID = "request_id_state"
-        private const val STATE_CHILD_LAUNCHED = "child_launched"
+        private const val STATE_SUBMITTED = "submitted_state"
         private const val STATE_AWAITING_SESSION = "awaiting_session"
     }
 }
