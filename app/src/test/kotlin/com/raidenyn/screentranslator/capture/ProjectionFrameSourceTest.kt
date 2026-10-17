@@ -642,4 +642,35 @@ class ProjectionFrameSourceTest {
         assertEquals(0xFF222222.toInt(), taken.await().getPixel(0, 0))
         source.close()
     }
+
+    @Test
+    fun idleFramesAfterSuccessfulCaptureAreClosedWithoutConversion() = runBlocking {
+        val source = newSource()
+        val reader = environment.readers.single()
+        val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
+        reader.deliver(FakeFrame(0xFF111111.toInt()))
+        taken.await().recycle()
+
+        val idle = FakeFrame(0xFF222222.toInt())
+        reader.deliver(idle)
+        assertEquals(0, idle.reads)
+        assertEquals(1, idle.closes)
+        source.close()
+    }
+
+    @Test
+    fun idleFramesAfterCancelledSettlementAreClosedWithoutConversion() = runBlocking {
+        val source = newSource()
+        val reader = environment.readers.single()
+        val taken = async(start = CoroutineStart.UNDISPATCHED) { source.takeSettled() }
+        reader.deliver(FakeFrame(0xFF111111.toInt()))
+        yield()
+        taken.cancelAndJoin()
+
+        val idle = FakeFrame(0xFF222222.toInt())
+        reader.deliver(idle)
+        assertEquals(0, idle.reads)
+        assertEquals(1, idle.closes)
+        source.close()
+    }
 }

@@ -228,6 +228,10 @@ internal class ProjectionFrameSource internal constructor(
                 return
             }
             val holder = settled ?: return
+            if (!holder.collectingFrames) {
+                settled = null
+                return
+            }
             try {
                 val plane = image.plane
                 holder.offer(bitmapConverter(plane.buffer, image.width, image.height, plane.pixelStride, plane.rowStride))
@@ -320,6 +324,7 @@ internal class ProjectionFrameSource internal constructor(
         private var timer: Job? = null
         val deadline = CompletableDeferred<Unit>()
         val active get() = synchronized(lock) { candidate != null }
+        val collectingFrames get() = synchronized(lock) { collecting }
 
         fun start(scope: CoroutineScope) {
             timer = scope.launch(start = CoroutineStart.UNDISPATCHED) {
