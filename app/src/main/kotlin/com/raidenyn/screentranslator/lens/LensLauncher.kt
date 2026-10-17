@@ -1,6 +1,7 @@
 package com.raidenyn.screentranslator.lens
 
 import android.app.ActivityOptions
+import android.content.ClipData
 import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
@@ -24,15 +25,22 @@ internal const val EXTRA_CALLER_PACKAGE = "caller_package"
  * That build's `dufz.a` also requires `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY` for
  * this component: without it, LensExportedActivity crashed on device with
  * "Launch mode only supported for shortcuts." before reading any extras
- * (bugreport 2026-10-17-10-30-58). Started for a result without a new task;
- * visible translation still requires device verification.
+ * (bugreport 2026-10-17-10-30-58).
+ *
+ * The screenshot grant travels on the intent itself (`FLAG_GRANT_READ_URI_PERMISSION`
+ * plus a ClipData holding the URI) exactly as in the user-verified share flow: with
+ * only a context-API `grantUriPermission`, Lens was denied reading the provider on
+ * device and closed immediately (bugreport 2026-10-17-11-02-06). Started for a
+ * result without a new task; visible translation still requires device verification.
  */
-fun translateRequest(uri: Uri, callerPackage: String): Intent =
-    Intent().setComponent(ComponentName(GSA_PACKAGE, LENS_EXPORTED_ACTIVITY))
-        .addFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY)
-        .putExtra(EXTRA_INJECTED_IMAGE_URI, uri)
-        .putExtra(EXTRA_OPEN_FILTER, "translate")
-        .putExtra(EXTRA_CALLER_PACKAGE, callerPackage)
+fun translateRequest(uri: Uri, callerPackage: String): Intent = Intent().apply {
+    setComponent(ComponentName(GSA_PACKAGE, LENS_EXPORTED_ACTIVITY))
+    addFlags(Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    clipData = ClipData.newRawUri("screenshot", uri)
+    putExtra(EXTRA_INJECTED_IMAGE_URI, uri)
+    putExtra(EXTRA_OPEN_FILTER, "translate")
+    putExtra(EXTRA_CALLER_PACKAGE, callerPackage)
+}
 
 /** Requests a fullscreen relay task instead of inheriting the sidebar's floating window. */
 fun fullscreenOptions(): Bundle = ActivityOptions.makeBasic().toBundle().apply {

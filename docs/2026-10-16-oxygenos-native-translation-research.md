@@ -320,3 +320,35 @@ v0.7.6 implements exactly that experiment: `translateRequest` now adds
 `FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY` to the unchanged v0.7.5 request. Whether
 Android preserves the bit across the relay's for-result start, and whether Lens
 then completes the image/filter flow, requires physical-device validation.
+
+## v0.7.6 result — Lens opened but was denied the screenshot
+
+The report `bugreport-PYB110-CP2A.260605.016-2026-10-17-11-02-06.txt` records
+the v0.7.6 run at 11:01:41:
+
+- Line 39487: the relay's request now carries `flg=0x100000`; Android preserved
+  the history bit and accepted the for-result start. The shortcut-mode crash is
+  gone.
+- Lines 39709–39740: `LensExportedActivity` is created, started, and resumed —
+  the frame the user saw.
+- Lines 39746–39747, at 11:01:41.547: `ContentProviderHelper: Permission Denial:
+  opening provider androidx.core.content.FileProvider
+  from ...com.google.android.googlequicksearchbox:googleapp (uid=10466) that is
+  not exported from UID 10493`. Lens tried to read the screenshot and the relay's
+  context-API `grantUriPermission` to the Google app package did not cover the
+  read.
+- Lines 57033 and 57048–57051: Lens finishes itself (`app-request`), the relay
+  receives the canceled activity result, and the flow ends. This is a read-grant
+  failure, not a repeat of the eligibility gate or the shortcut crash.
+
+For comparison, the user-verified working share flow in the 2026-10-16 report
+launched with `flg=0x10000001` — `FLAG_GRANT_READ_URI_PERMISSION` plus
+`FLAG_ACTIVITY_NEW_TASK` — and a ClipData carrying the screenshot URI
+(line 65066). The system delivered that grant with the intent, and Lens read the
+provider on the same phone.
+
+v0.7.7 therefore adds `FLAG_GRANT_READ_URI_PERMISSION` and a ClipData holding
+the screenshot URI to the translate request, replicating the proven grant
+mechanism; the relay's context-API grant remains as a redundant path. Whether
+Lens then completes the image and translate-filter flow still requires
+physical-device verification.
