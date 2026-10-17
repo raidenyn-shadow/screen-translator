@@ -9,10 +9,13 @@ import android.app.Service
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import androidx.core.content.IntentCompat
 import androidx.test.core.app.ApplicationProvider
 import com.raidenyn.screentranslator.R
+import com.raidenyn.screentranslator.capture.CaptureResult
 import com.raidenyn.screentranslator.capture.FrameImage
 import com.raidenyn.screentranslator.capture.FrameReader
 import com.raidenyn.screentranslator.capture.ProjectionEnvironment
@@ -21,7 +24,9 @@ import com.raidenyn.screentranslator.capture.ProjectionFrameSource
 import com.raidenyn.screentranslator.capture.ScreenGeometry
 import com.raidenyn.screentranslator.capture.VirtualScreen
 import com.raidenyn.screentranslator.ui.TrampolineActivity
+import com.raidenyn.screentranslator.ui.TranslateRelayActivity
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.TestScope
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -36,7 +41,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.android.controller.ServiceController
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowToast
 import org.robolectric.util.ReflectionHelpers
+import java.io.File
 import java.util.concurrent.Executor
 
 @RunWith(RobolectricTestRunner::class)
@@ -47,11 +54,18 @@ class ScreenCaptureServiceTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val app = ApplicationProvider.getApplicationContext<Application>()
     private var controller: ServiceController<ScreenCaptureService>? = null
+    private val testScope = TestScope()
+    private var booted: SessionBoot? = null
 
     @After fun clean() {
+        booted?.controller?.destroy()
+        booted = null
         controller?.destroy()
         controller = null
+        testScope.cancel()
     }
+
+    private fun booted(): SessionBoot = booted ?: bootSession(testScope).also { booted = it }
 
     /**
      * Environment fake behind the real [ProjectionFrameSource] the scripted session hands the
@@ -321,5 +335,59 @@ class ScreenCaptureServiceTest {
     @Test fun productionSessionRefusesTokenlessConsent() {
         assertNull(MediaProjectionSession.acquire(context, Activity.RESULT_CANCELED, Intent()) {})
         assertNull(MediaProjectionSession.acquire(context, Activity.RESULT_OK, Intent()) {})
+    }
+
+    @Test fun translateCommandCapturesAndStartsTheFullscreenRelay() {
+        val boot = booted()
+        ScreenCaptureService.translate(context)
+        driveCommand(boot.controller, Shadows.shadowOf(app).nextStartedService)
+        testScope.testScheduler.runCurrent()
+        boot.environment.deliver()
+        testScope.advanceUntilPipelineIdle()
+
+        val relay = Shadows.shadowOf(app).nextStartedActivity ?: error("no relay started")
+        assertEquals(ComponentName(context, TranslateRelayActivity::class.java), relay.component)
+        val file = File(context.cacheDir, "captures").listFiles()!!.single()
+        assertEquals(
+            Uri.parse("content://com.raidenyn.screentranslator.files/captures/${file.name}"),
+            IntentCompat.getParcelableExtra(relay, TranslateRelayActivity.EXTRA_IMAGE_URI, Uri::class.java),
+        )
+        assertTrue(relay.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
+        assertTrue(relay.flags and Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS != 0)
+        assertEquals(emptyMap<String, CaptureResult>(), boot.service.requests.results.value)
+    }
+
+    @Test fun translateCommandWithoutFrameFailsWithScreenshotToastAndNoRelay() {
+        val boot = booted()
+        ScreenCaptureService.translate(context)
+        driveCommand(boot.controller, Shadows.shadowOf(app).nextStartedService)
+        testScope.advanceUntilPipelineIdle()
+
+        assertEquals(context.getString(R.string.error_screenshot_failed), ShadowToast.getTextOfLatestToast())
+        assertNull(Shadows.shadowOf(app).peekNextStartedActivity())
+        assertEquals(emptyMap<String, CaptureResult>(), boot.service.requests.results.value)
+    }
+
+    @Test fun translateWithoutAReadySessionIsANoop() {
+        val service = Robolectric.buildService(ScreenCaptureService::class.java).create()
+        ScreenCaptureService.translate(context)
+        service.withIntent(Shadows.shadowOf(app).nextStartedService).startCommand(0, 0)
+
+        assertNull(Shadows.shadowOf(app).peekNextStartedActivity())
+        service.destroy()
+    }
+
+    @Test fun secondTranslateWhileOneIsInFlightStartsOnlyOneRelay() {
+        val boot = booted()
+        ScreenCaptureService.translate(context)
+        driveCommand(boot.controller, Shadows.shadowOf(app).nextStartedService)
+        testScope.testScheduler.runCurrent()
+        ScreenCaptureService.translate(context)
+        driveCommand(boot.controller, Shadows.shadowOf(app).nextStartedService)
+        boot.environment.deliver()
+        testScope.advanceUntilPipelineIdle()
+
+        assertTrue(Shadows.shadowOf(app).nextStartedActivity != null)
+        assertNull(Shadows.shadowOf(app).peekNextStartedActivity())
     }
 }

@@ -13,15 +13,20 @@ import android.media.projection.MediaProjectionManager
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.widget.Toast
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.IntentCompat
 import com.raidenyn.screentranslator.R
 import com.raidenyn.screentranslator.capture.CaptureError
 import com.raidenyn.screentranslator.capture.CaptureRequests
+import com.raidenyn.screentranslator.capture.CaptureResult
 import com.raidenyn.screentranslator.capture.CaptureStore
 import com.raidenyn.screentranslator.capture.ProjectionFrameSource
+import com.raidenyn.screentranslator.capture.ScreenshotTaker
+import com.raidenyn.screentranslator.lens.fullscreenOptions
 import com.raidenyn.screentranslator.ui.TrampolineActivity
+import com.raidenyn.screentranslator.ui.TranslateRelayActivity
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,7 +35,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 /**
  * Foreground service owning one consented MediaProjection session. Startup promotes the
@@ -68,6 +75,7 @@ class ScreenCaptureService : Service() {
         when (intent?.action) {
             ACTION_START -> startSession(intent)
             ACTION_STOP -> stopSession()
+            ACTION_TRANSLATE -> translateCommand()
             else -> stopSelf()
         }
         return START_NOT_STICKY
@@ -110,7 +118,12 @@ class ScreenCaptureService : Service() {
     /** Publishes the ready [started] session, unless a stop already claimed and cleared it. */
     private fun publishIfLive(started: ProjectionFrameSource) {
         if (source !== started) return
-        pipeline = CaptureRequests(started, CaptureStore.from(this), sessionScope())
+        pipeline = CaptureRequests(
+            ScreenshotTaker { started.takeSettled() },
+            CaptureStore.from(this),
+            sessionScope(),
+            delayMs = 0,
+        )
         connectedState.value = this
         startupErrorState.value = null
     }
@@ -129,6 +142,30 @@ class ScreenCaptureService : Service() {
         cleanup()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         stopSelf()
+    }
+
+    private fun translateCommand() {
+        val pipeline = pipeline ?: return
+        val id = UUID.randomUUID().toString()
+        if (!pipeline.request(id)) return
+        sessionScope().launch {
+            val result = pipeline.results.first { it.containsKey(id) }[id]!!
+            pipeline.acknowledge(id)
+            when (result) {
+                is CaptureResult.Saved -> startTranslationRelay(result.uri)
+                is CaptureResult.Failed -> Toast.makeText(this@ScreenCaptureService, result.error.labelRes, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun startTranslationRelay(uri: android.net.Uri) {
+        val relay = TranslateRelayActivity.intent(this, uri)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+        try {
+            startActivity(relay, fullscreenOptions())
+        } catch (_: Exception) {
+            Toast.makeText(this, R.string.error_launch_failed, Toast.LENGTH_SHORT).show()
+        }
     }
 
     /** Revocation arrives on the frame source's state thread; teardown must run on main. */
@@ -159,6 +196,7 @@ class ScreenCaptureService : Service() {
     companion object {
         internal const val ACTION_START = "com.raidenyn.screentranslator.session.START"
         internal const val ACTION_STOP = "com.raidenyn.screentranslator.session.STOP"
+        internal const val ACTION_TRANSLATE = "com.raidenyn.screentranslator.session.TRANSLATE"
         internal const val EXTRA_RESULT_CODE = "result_code"
         internal const val EXTRA_CONSENT_DATA = "consent_data"
 
@@ -187,6 +225,12 @@ class ScreenCaptureService : Service() {
         fun stop(context: Context) {
             context.startService(
                 Intent(context, ScreenCaptureService::class.java).setAction(ACTION_STOP),
+            )
+        }
+
+        fun translate(context: Context) {
+            context.startService(
+                Intent(context, ScreenCaptureService::class.java).setAction(ACTION_TRANSLATE),
             )
         }
 
