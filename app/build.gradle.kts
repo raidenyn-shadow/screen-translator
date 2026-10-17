@@ -17,6 +17,14 @@ android {
         targetSdk = 36
     }
 
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+        }
+    }
+
     sourceSets.getByName("main").java.srcDir("src/main/kotlin")
     sourceSets.getByName("test").java.srcDir("src/test/kotlin")
 
