@@ -135,3 +135,137 @@ requires an actual device check. Automatic image loading, translation mode,
 language persistence, offline model use, and full-screen presentation must be
 verified separately. A resolved activity or accepted launch is not enough to
 claim success.
+
+## v0.7.4 device failure — eligibility gate
+
+The follow-up report `bugreport-PYB110-CP2A.260605.016-2026-10-17-08-36-28.txt`
+records the failed direct request on the user's PYB110 phone:
+
+- Lines 41277 and 41376: Android accepts both the relay launch and the inner
+  `ACTION_VIEW google://lens/...` launch, each with activity-start result code 0.
+  This is an Android launch result, not a Lens eligibility/result code.
+- Line 41385: the relay's configuration reports `mWindowingMode=fullscreen`.
+- Line 44040: the installed Google app is reported as versionCode **301817218**.
+- Lines 44156–44161, at `08:36:22.577–.578`: Google logs `Checking for device
+  compliance...`, then `(REDACTED) Lens eligibility error: %s` from `dsyy`, and
+  immediately finishes `LensExportedActivity` through `dsyx.a`.
+
+This establishes failure in Google's eligibility path after a successful Android
+launch. The detail substituted for `%s` is redacted. The report does not establish
+the numeric Lens result or distinguish an unapproved caller from other
+eligibility conditions. In particular, the adjacent device-compliance message
+alone does not establish a device-compliance failure.
+
+An independent newer-build investigation describes the eligibility decision as
+checking the activity's framework calling package, Google configuration/package
+sets, and OEM camera/image integration features/properties. It also describes
+locale, incompatible-device, and locked-device outcomes. Source:
+
+<https://github.com/TakeKazeX/HyperTweak/blob/0d4caf33d356dc0203bd4d2f576b327837b7c0f6/app/src/main/kotlin/com/takekazex/hypertweak/hook/rules/googleapp/GoogleAppLensEntryHooker.kt>
+
+That source discusses other Google versions, so its result mapping is supporting
+evidence, not a verified mapping for versionCode 301817218. Its workaround uses
+in-process Xposed hooks; it is not an ordinary-app intent capability.
+
+The locally available `velvet.apk` is Google **13.17.16.23.x86_64**, versionCode
+**301194889**, as reported by Android SDK `aapt dump badging`. It is not the
+installed build and must not be used to claim the exact `dsyy`/`dsyx` decision has
+been traced. Obtain the Google app's base APK and, preferably, its split APKs from
+the failing phone before continuing exact-build analysis. The exported APK and
+raw bug report belong outside the repository.
+
+No supported intent extra or manifest permission that satisfies this eligibility
+gate has been established. Caller allowlisting is the leading hypothesis, not a
+confirmed exact subcondition. There is no evidence here for another intent-flag
+release fixing v0.7.4.
+
+## Exact Google build analysis — 17.64.15.ve.arm64
+
+The subsequent user-supplied `Googlev17.64.15.ve.arm64.apks` contains `base.apk`
+and six splits, including the Lens on-device and TranslateKit modules. Android
+SDK `aapt dump badging` identifies the base as
+`com.google.android.googlequicksearchbox`, versionName **17.64.15.ve.arm64**,
+versionCode **301817218**, matching the failing report. Base APK SHA-256:
+`3a20044f40f1b85f788a70674081fb9f316028d40e5faa799fcbc33a5e983c03`.
+The older local APK limitation above is therefore resolved for this analysis.
+
+JADX single-class analysis recovered the relevant classes from the supplied base:
+
+- `dsyy.a(String)`: an empty caller returns activity result **3**. Otherwise it
+  invokes `dsyc.b(caller)`. Ready returns **-1**; unsupported locale,
+  incompatible device, and locked device have separate result paths. The
+  fallback logs the exact `Lens eligibility error: %s` string seen in the report
+  and returns **1**.
+- `dsyc.b(String)`: the actual decision used here returns only `LENS_READY` or
+  `LENS_UNAVAILABLE`. It accepts a Google-supplied global boolean override;
+  otherwise it rejects an empty caller or membership in its `f` package set,
+  accepts membership in its `e` package set, and otherwise checks OEM admission.
+  These are respectively a denylist and allowlist, not two allowlists.
+- The OEM branch checks the system feature/property pairs in `dsyg.a`:
+  `com.google.lens.feature.CAMERA_INTEGRATION` with
+  `ro.com.google.lens.oem_camera_package`, or
+  `com.google.lens.feature.IMAGE_INTEGRATION` with
+  `ro.com.google.lens.oem_image_package`. `dsyf.a` splits the property on commas,
+  trims entries, and compares them with the caller package. A matching caller
+  must also pass `PackageManager.getApplicationInfo(caller, 0x100000)`.
+- `dsyx.a(...)` passes `dskg.c` (identified as `callerPackage` by its constructor)
+  to `dsyy.a`, sets the resulting activity result, and finishes unless it is
+  **-1**. This corroborates the report's `dsyx.a` finish stack.
+
+The default structured decompile of `dsyc.b` loses essential loop exits and
+produces misleading control flow. Its **fallback instruction output** was checked
+to establish the branches: `L26` is unavailable, `Lbb` is ready, a matching OEM
+package reaches `Lbb` only after successful package lookup, and exhausted OEM
+entries reach `L26`. Conclusions above use that output rather than the broken
+structured reconstruction.
+
+This exact-build path establishes caller admission as the failure category and
+the resulting Lens activity result as **1**, inferred from the matched code and
+observed log. It does not reveal the live Google configuration sets, so explicit
+denylisting and absence from the allowlist/OEM declarations cannot be
+distinguished. The earlier locale/device/lock alternatives are not outcomes of
+the `dsyc.b` implementation used by this build's direct-intent eligibility path.
+Neither screenshot URI access nor translation language settings are checked in
+that decision method.
+
+No ordinary-app intent parameter or manifest permission controls these admission
+inputs. Copying the OEM request format alone therefore cannot make Screen
+Translator eligible on the tested configuration. This is not evidence that every
+other Google entry point has the same gate; the previously working share entry
+point remains a distinct flow and did not establish forced translation mode.
+No application behavior change or new APK release was made from this analysis.
+
+## v0.7.5 route — explicit LensExportedActivity request
+
+Further exact-build analysis found a second, un-gated request path in the same
+base APK:
+
+- `dufz.a(Intent)` maps the launch by component, flags, and data URI. The
+  `google://lens` data URI launched with only `setPackage` resolved in the
+  v0.7.4 report to the `com.google.android.apps.lens.MainActivity` alias, which
+  unconditionally maps to integration mode **5**. The same request addressed
+  explicitly to `com.google.android.apps.search.lens.LensExportedActivity` with
+  no data URI and no `FLAG_ACTIVITY_NEW_TASK` maps to integration mode **2**.
+- `cthc.<init>`, the delegate installed for `LensExportedActivity`, is the only
+  writer of the `ctgy.b` gate boolean (verified by a dex field-write scan). The
+  `dsyx.a` eligibility gate requires that boolean **and** mode 5, so mode-2
+  launches never reach `dsyy`'s caller-admission decision.
+- Mode 2 parses intent extras: `dufz.b` reads the image from
+  `injected_image_uri` (or ClipData/`injected_image_uri_string`) and builds the
+  external post-capture image, while the mode-2 config block calls
+  `ctib.d(extras)`, which recognizes `open_filter=translate` plus optional
+  `source_language`/`target_language` and sets the translate filter in the Lens
+  initial parameters. `ctib.c(extras)` reads `caller_package`.
+- The exported `LensShareEntryPointActivity` is not usable for forced
+  translation: its `onCreate` validates `ACTION_SEND`+`EXTRA_STREAM` and builds
+  fresh internal parameters; it forwards neither the image extras nor any
+  filter.
+
+v0.7.5 therefore changes `translateRequest` to address the exported Lens
+component explicitly with `injected_image_uri`, `open_filter=translate`, the
+relay's real `caller_package`, no data URI, and no new-task flag, still started
+for a result with the temporary URI grant. Language overrides stay unset.
+Whether this route visibly translates, reuses Google Translate preferences or
+offline packs, and preserves fullscreen presentation still requires
+physical-device verification; a server-side or downstream check not visible in
+static analysis remains possible.

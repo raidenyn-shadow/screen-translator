@@ -42,7 +42,7 @@ class TranslateRelayActivity : Activity() {
         if (waitingForLens) return
         try {
             grantUriPermission(GSA_PACKAGE, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            requestLauncher(translateRequest(uri), REQUEST_LENS)
+            requestLauncher(translateRequest(uri, packageName), REQUEST_LENS)
             waitingForLens = true
         } catch (_: Exception) {
             // Lens missing, unavailable for this caller, or the start was rejected.

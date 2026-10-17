@@ -1,9 +1,15 @@
 package com.raidenyn.screentranslator.ui
 
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
+import androidx.core.content.IntentCompat
 import com.raidenyn.screentranslator.R
+import com.raidenyn.screentranslator.lens.EXTRA_CALLER_PACKAGE
+import com.raidenyn.screentranslator.lens.EXTRA_INJECTED_IMAGE_URI
+import com.raidenyn.screentranslator.lens.EXTRA_OPEN_FILTER
+import com.raidenyn.screentranslator.lens.LENS_EXPORTED_ACTIVITY
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -36,14 +42,18 @@ class TranslateRelayActivityTest {
 
     private fun shadow(activity: Activity): ShadowActivity = Shadows.shadowOf(activity)
 
-    @Test fun forwardsTheScreenshotToTheOxygenosLensContractForResult() {
+    @Test fun forwardsTheScreenshotToTheExportedLensComponentForResult() {
         val controller = relay(translateIntent())
         val relayed = shadow(controller.get()).nextStartedActivityForResult ?: error("no Lens request")
         val intent = relayed.intent
-        assertEquals(Intent.ACTION_VIEW, intent.action)
-        assertEquals("com.google.android.googlequicksearchbox", intent.`package`)
-        assertEquals(this.uri, intent.data?.getQueryParameter("image_uri")?.let(Uri::parse))
-        assertEquals("translate", intent.data?.getQueryParameter("filter"))
+        assertEquals(
+            ComponentName("com.google.android.googlequicksearchbox", LENS_EXPORTED_ACTIVITY),
+            intent.component,
+        )
+        assertNull(intent.data)
+        assertEquals(uri, IntentCompat.getParcelableExtra(intent, EXTRA_INJECTED_IMAGE_URI, Uri::class.java))
+        assertEquals("translate", intent.getStringExtra(EXTRA_OPEN_FILTER))
+        assertEquals("com.raidenyn.screentranslator", intent.getStringExtra(EXTRA_CALLER_PACKAGE))
         assertTrue(intent.flags and Intent.FLAG_ACTIVITY_NEW_TASK == 0)
         assertTrue(relayed.requestCode > 0)
     }
