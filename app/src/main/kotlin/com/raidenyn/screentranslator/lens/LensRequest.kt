@@ -34,3 +34,12 @@ fun fullscreenOptions(): Bundle = ActivityOptions.makeBasic().toBundle().apply {
     // ActivityOptions' windowing-mode setter is hidden from the public SDK.
     putInt("android.activity.windowingMode", 1)
 }
+
+/**
+ * Store pages for installing or updating the Google app (host of Lens), most specific first:
+ * the Play Store app, then the web page for any browser or other store handler.
+ */
+fun installGoogleAppRequests(): List<Intent> = listOf(
+    "market://details?id=$GSA_PACKAGE",
+    "https://play.google.com/store/apps/details?id=$GSA_PACKAGE",
+).map { Intent(Intent.ACTION_VIEW, Uri.parse(it)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }

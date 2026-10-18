@@ -37,4 +37,19 @@ class LensRequestTest {
     @Test fun fullscreenOptionsRequestFullscreenWindowing() {
         assertEquals(1, fullscreenOptions().getInt("android.activity.windowingMode"))
     }
+
+    @Test fun installGoogleAppRequestsTryMarketThenWebStoreInNewTask() {
+        val requests = installGoogleAppRequests()
+        assertEquals(
+            listOf(
+                "market://details?id=com.google.android.googlequicksearchbox",
+                "https://play.google.com/store/apps/details?id=com.google.android.googlequicksearchbox",
+            ),
+            requests.map { it.data.toString() },
+        )
+        requests.forEach {
+            assertEquals(Intent.ACTION_VIEW, it.action)
+            assertTrue(it.flags and Intent.FLAG_ACTIVITY_NEW_TASK != 0)
+        }
+    }
 }

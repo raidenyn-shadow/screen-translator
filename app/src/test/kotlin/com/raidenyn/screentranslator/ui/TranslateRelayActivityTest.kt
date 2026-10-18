@@ -1,6 +1,7 @@
 package com.raidenyn.screentranslator.ui
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
@@ -11,6 +12,7 @@ import com.raidenyn.screentranslator.lens.EXTRA_INJECTED_IMAGE_URI
 import com.raidenyn.screentranslator.lens.EXTRA_OPEN_FILTER
 import com.raidenyn.screentranslator.lens.LENS_EXPORTED_ACTIVITY
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -66,15 +68,54 @@ class TranslateRelayActivityTest {
         assertEquals(Activity.RESULT_CANCELED, relayed.resultCode)
     }
 
-    @Test fun missingLensFinishesCanceledWithFailureToast() {
+    private fun failingLensRelay(storeLauncher: (Intent) -> Unit): ActivityController<TranslateRelayActivity> {
         val controller = Robolectric.buildActivity(TranslateRelayActivity::class.java, translateIntent())
-        controller.get().requestLauncher = { _, _ -> throw android.content.ActivityNotFoundException("missing Lens") }
-        controller.create().start().resume().visible()
+        controller.get().requestLauncher = { _, _ -> throw ActivityNotFoundException("missing Lens") }
+        controller.get().storeLauncher = storeLauncher
+        return controller.create().start().resume().visible()
+    }
+
+    @Test fun missingLensOpensTheMarketPageAndFinishesCanceled() {
+        val opened = mutableListOf<Intent>()
+        val controller = failingLensRelay { opened += it }
         val relayed = shadow(controller.get())
         assertNull(relayed.nextStartedActivityForResult)
+        assertEquals(
+            listOf("market://details?id=com.google.android.googlequicksearchbox"),
+            opened.map { it.data.toString() },
+        )
+        assertEquals(controller.get().getString(R.string.error_lens_unavailable), ShadowToast.getTextOfLatestToast())
         assertTrue(controller.get().isFinishing)
         assertEquals(Activity.RESULT_CANCELED, relayed.resultCode)
+    }
+
+    @Test fun missingLensFallsBackToTheWebStoreWhenMarketIsUnavailable() {
+        val opened = mutableListOf<Intent>()
+        failingLensRelay {
+            if (it.scheme == "market") throw ActivityNotFoundException("no store app")
+            opened += it
+        }
+        assertEquals(
+            listOf("https://play.google.com/store/apps/details?id=com.google.android.googlequicksearchbox"),
+            opened.map { it.data.toString() },
+        )
+    }
+
+    @Test fun missingLensWithoutAnyStoreShowsTheFailureToast() {
+        val controller = failingLensRelay { throw ActivityNotFoundException("no store") }
+        assertTrue(controller.get().isFinishing)
+        assertEquals(Activity.RESULT_CANCELED, shadow(controller.get()).resultCode)
         assertEquals(controller.get().getString(R.string.error_launch_failed), ShadowToast.getTextOfLatestToast())
+    }
+
+    @Test fun lensRejectionAfterLaunchDoesNotOpenTheStore() {
+        var storeOpened = false
+        val controller = Robolectric.buildActivity(TranslateRelayActivity::class.java, translateIntent())
+        controller.get().storeLauncher = { storeOpened = true }
+        controller.create().start().resume().visible()
+        val relayed = shadow(controller.get()).nextStartedActivityForResult ?: error("no Lens request")
+        shadow(controller.get()).receiveResult(relayed.intent, 1, null)
+        assertFalse(storeOpened)
     }
 
     @Test fun lensResultIsPropagatedAndRelayFinishes() {
