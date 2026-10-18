@@ -1,0 +1,22 @@
+{
+  "name": "screen-translator-repo-tools",
+  "private": true,
+  "scripts": {
+    "prepare": "husky",
+    "test": "node --test .github/scripts/*.test.mjs",
+    "commitlint": "commitlint",
+    "policy": "node .github/scripts/check-policy.mjs",
+    "policy:head": "node .github/scripts/check-policy.mjs --head"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "21.2.3",
+    "@commitlint/config-conventional": "21.2.3",
+    "@commitlint/lint": "21.2.3",
+    "@commitlint/load": "21.2.3",
+    "@commitlint/parse": "21.2.3",
+    "husky": "9.1.7"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}
