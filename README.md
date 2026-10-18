@@ -111,6 +111,9 @@ app will allow screen sharing or capture.
 
 ## Development checks
 
+GitHub PR checks, label-triggered debug APKs, and manually published signed
+releases are described in [CI and releases](docs/ci.md).
+
 ```bash
 JAVA_HOME=$JAVA_ROOT/zulu21 ./gradlew :app:testDebugUnitTest :app:testReleaseUnitTest :app:assembleRelease :app:lintRelease
 ```
