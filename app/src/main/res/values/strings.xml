@@ -3,6 +3,7 @@
     <string name="error_screenshot_failed">Could not take a screenshot. Try again in a moment.</string>
     <string name="error_save_failed">Could not save the screenshot.</string>
     <string name="error_launch_failed">Could not open Google Lens.</string>
+    <string name="error_lens_unavailable">Google app with Lens is required. Opening store…</string>
     <string name="error_session_failed">Screen sharing could not be started. Please try again.</string>
 
     <string name="notification_channel_name">Screen sharing</string>

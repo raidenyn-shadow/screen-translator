@@ -1,6 +1,7 @@
 package com.raidenyn.screentranslator.ui
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -9,6 +10,7 @@ import androidx.core.content.IntentCompat
 import androidx.core.os.BundleCompat
 import com.raidenyn.screentranslator.R
 import com.raidenyn.screentranslator.lens.GSA_PACKAGE
+import com.raidenyn.screentranslator.lens.installGoogleAppRequests
 import com.raidenyn.screentranslator.lens.translateRequest
 
 /**
@@ -24,6 +26,9 @@ class TranslateRelayActivity : Activity() {
     internal var requestLauncher: (Intent, Int) -> Unit = { intent, code ->
         startActivityForResult(intent, code)
     }
+
+    /** Framework seam scripted by tests; production opens the store page. */
+    internal var storeLauncher: (Intent) -> Unit = { startActivity(it) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -44,8 +49,11 @@ class TranslateRelayActivity : Activity() {
             waitingForLens = true
         } catch (_: Exception) {
             // Lens missing, unavailable for this caller, or the start was rejected.
-            Toast.makeText(this, R.string.error_launch_failed, Toast.LENGTH_SHORT).show()
             releaseGrant()
+            Toast.makeText(this, R.string.error_lens_unavailable, Toast.LENGTH_SHORT).show()
+            if (!openStore()) {
+                Toast.makeText(this, R.string.error_launch_failed, Toast.LENGTH_SHORT).show()
+            }
             setResult(RESULT_CANCELED)
             finish()
         }
@@ -77,6 +85,18 @@ class TranslateRelayActivity : Activity() {
     private fun releaseGrant() {
         relayUri?.let { revokeUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         relayUri = null
+    }
+
+    /** Starts the first store page that resolves; false if none can be started. */
+    private fun openStore(): Boolean = installGoogleAppRequests().any { request ->
+        try {
+            storeLauncher(request)
+            true
+        } catch (_: ActivityNotFoundException) {
+            false
+        } catch (_: SecurityException) {
+            false
+        }
     }
 
     companion object {

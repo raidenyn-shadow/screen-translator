@@ -101,8 +101,9 @@ sharing session alive.
 Screenshots are not saved to the gallery. Cached captures are purged at the next
 app process start. The app does not keep UI-control dumps or diagnostic reports.
 
-Capture, image-save, and Lens-launch failures are shown as short toasts. If Lens
-is unavailable, install or enable the Google app and try again.
+Capture and image-save failures are shown as short toasts. If Lens cannot be
+launched (the Google app is missing, disabled, or too old), the app says so and
+opens the Google app's store page; install or update it and try again.
 
 Android and individual apps control what MediaProjection can show. Secure or
 protected content can be black or unavailable in the capture. Removing this

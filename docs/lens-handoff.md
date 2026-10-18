@@ -46,6 +46,9 @@ contract; it is not Google's public image-translation API.
 4. Saved instance state prevents a duplicate Lens launch after recreation. The
    relay retains access across configuration changes and revokes it on result,
    launch failure, or terminal destruction.
+5. If starting the Lens intent throws, the relay releases the grant, toasts that the
+   Google app with Lens is required, and opens its store page (`market://`, then the
+   Play web URL). A non-OK Lens result does not open the store.
 
 ## Regression-sensitive details
 
