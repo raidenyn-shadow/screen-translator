@@ -1,0 +1,38 @@
+name: Semantic policy
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review, labeled, unlabeled]
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: semantic-policy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy:
+    name: Semantic policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Test semantic policy and version calculations
+        run: |
+          npm test
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+      - name: Validate PR title and commits
+        run: npm run policy

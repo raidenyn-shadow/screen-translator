@@ -6,6 +6,7 @@ on:
 permissions:
   contents: write
   statuses: write
+  pull-requests: read
 
 concurrency:
   group: release-main
@@ -29,7 +30,36 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
 
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Select semantic increment and bump Android version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm test
+          python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+          bump=$(node .github/scripts/release-policy.mjs)
+          if [[ "$bump" == none ]]; then
+            echo 'release=false' >> "$GITHUB_OUTPUT"
+            echo 'No release-worthy changes since the current version tag.'
+            exit 0
+          fi
+          version=$(python3 .github/scripts/bump_version.py app/build.gradle.kts --bump "$bump")
+          echo 'release=true' >> "$GITHUB_OUTPUT"
+          echo "name=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse "refs/tags/v$version" >/dev/null 2>&1; then
+            echo "::error::Tag v$version already exists."
+            exit 1
+          fi
+
       - name: Check signing configuration
+        if: steps.version.outputs.release == 'true'
         env:
           KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
@@ -43,18 +73,8 @@ jobs:
             fi
           done
 
-      - name: Bump patch version and Android version code
-        id: version
-        run: |
-          python3 -m unittest discover -s .github/scripts -p 'test_*.py'
-          version=$(python3 .github/scripts/bump_version.py app/build.gradle.kts)
-          echo "name=$version" >> "$GITHUB_OUTPUT"
-          if git rev-parse "refs/tags/v$version" >/dev/null 2>&1; then
-            echo "::error::Tag v$version already exists."
-            exit 1
-          fi
-
       - name: Prepare release candidate commit
+        if: steps.version.outputs.release == 'true'
         id: candidate
         env:
           VERSION: ${{ steps.version.outputs.name }}
@@ -62,15 +82,18 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add app/build.gradle.kts
-          git commit -m "chore: release $VERSION"
+          git commit -m "chore(release): $VERSION"
+          npm run policy:head
           branch="release-candidate/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           git push origin "HEAD:refs/heads/$branch"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
       - name: Test, lint, and build release
+        if: steps.version.outputs.release == 'true'
         run: ./gradlew :app:testDebugUnitTest :app:testReleaseUnitTest :app:lintDebug :app:lintRelease :app:assembleRelease --no-daemon
 
       - name: Sign and verify release APK
+        if: steps.version.outputs.release == 'true'
         env:
           KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
@@ -94,6 +117,7 @@ jobs:
           "$build_tools/apksigner" verify --verbose --print-certs "screen-translator-$VERSION.apk"
 
       - name: Save APK for recovery if publishing fails
+        if: steps.version.outputs.release == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: screen-translator-${{ steps.version.outputs.name }}-release
@@ -101,6 +125,7 @@ jobs:
           if-no-files-found: error
 
       - name: Record verified checks and push version bump and tag
+        if: steps.version.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.name }}
@@ -110,10 +135,15 @@ jobs:
             -f state=success -f context='Tests and lint' \
             -f description='Release candidate passed versioning tests, both unit-test suites and both lints' \
             -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$sha" \
+            -f state=success -f context='Semantic policy' \
+            -f description='Conventional release commit and semantic versioning tests passed' \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
           git tag -a "v$VERSION" -m "Release $VERSION"
           git push --atomic origin HEAD:main "refs/tags/v$VERSION"
 
       - name: Publish GitHub release
+        if: steps.version.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.name }}
@@ -122,7 +152,7 @@ jobs:
             --verify-tag --title "Screen Translator $VERSION" --generate-notes
 
       - name: Upload test and lint reports
-        if: always()
+        if: always() && steps.version.outputs.release == 'true'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-check-reports

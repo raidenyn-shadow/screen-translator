@@ -1,9 +1,32 @@
 # GitHub CI and releases
 
+## Commit and pull-request policy
+
+Run `npm ci` with Node.js 22.12+ after cloning. It installs Husky's `commit-msg`
+hook; every local commit is checked by `commitlint.config.mjs`. Use
+`type(scope)!: description` (scope and `!` optional), at most 100 characters.
+Types: `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`,
+`chore`, `style`, `revert`. Scope characters are lowercase letters, digits,
+dot, underscore, slash and hyphen. PR titles use the same single-line format.
+
+The required **Semantic policy** CI check validates the PR title and every new
+commit, rerunning on title edits, commits and label changes. Rebase topic branches
+instead of adding merge commits. GitHub permits squash merges only, defaults the
+squash subject to the PR title and its body to the PR description; keep that
+validated title when merging. The policy workflow also validates new `main`
+commits. GitHub rejected the commit-message metadata restriction for this
+repository, so server-side protection is the required PR check, squash-only
+merging and linear history, rather than a commit-subject regex gate. A manually
+edited squash subject is checked by CI after merge; retain the PR-title default.
+
+Breaking changes use a subject `!` or `BREAKING CHANGE:` / `BREAKING-CHANGE:`
+footer. Preserve the marker in the PR title/body for the resulting squash commit.
+Test tooling with `npm test` and the Python versioning test command below.
+
 ## Pull requests
 
 `Android CI` runs on PR creation, reopening, every new commit, merge-queue
-updates, and pushes to `main`. The required check is **Tests and lint**. It runs:
+updates, and pushes to `main`. The required Android check is **Tests and lint**. It runs:
 
 ```sh
 python3 -m unittest discover -s .github/scripts -p 'test_*.py'
@@ -14,8 +37,8 @@ Both Android variants are covered. There are currently no instrumented tests or
 additional Kotlin lint tools configured. Reports are retained for 14 days,
 including when a check fails.
 
-The `main: required CI` GitHub ruleset requires a passing **Tests and lint**
-check from GitHub Actions and an up-to-date branch before merging. It blocks
+The `main: required CI` GitHub ruleset requires passing **Tests and lint** and
+**Semantic policy** checks from GitHub Actions and an up-to-date branch before merging. It blocks
 force pushes and deletion, with no bypass actors. The release workflow records
 a successful commit status on its exact tested release candidate before pushing
 to `main`, satisfying the same requirement. Keep write permissions restricted
@@ -59,13 +82,18 @@ must be nonempty. No additional personal access token is needed.
 After the workflow changes are merged into `main`:
 
 1. Open **Actions → Release APK → Run workflow** and choose **main**.
-2. The workflow increments `versionCode` and the semantic patch component of
-   `versionName` in `app/build.gradle.kts` (for example, `20`/`0.8.1` becomes
-   `21`/`0.8.2`).
+2. The workflow examines first-parent commits since the current version tag and
+   their associated merged PRs targeting `main`. The exact PR label **Major
+   Feature** or a breaking change selects major; `feat` selects minor;
+   `fix`/`perf`/`revert` select patch. Highest increment wins, including for `0.x`.
+   Other types alone cause a successful no-op. Labels are evaluated at release
+   time; retain the label for auditability. Major/minor reset lower components;
+   `versionCode` increments once (for example, `21`/`0.8.2` becomes `22`/`1.0.0`
+   for a major release). No manual version bumps.
 3. It commits the version bump on a temporary release-candidate branch, runs
    both unit-test suites and both Android lint variants, builds the
    optimized release APK, aligns it, signs it, and verifies the signature.
-4. It records a successful **Tests and lint** commit status from GitHub Actions,
+4. It records successful **Tests and lint** and **Semantic policy** statuses from GitHub Actions,
    atomically pushes the version-bump commit to `main` and the matching
    annotated `vVERSION` tag, then publishes a GitHub Release with generated notes
    and `screen-translator-VERSION.apk` attached. It then deletes the temporary
@@ -73,7 +101,8 @@ After the workflow changes are merged into `main`:
 
 Dispatching from another branch skips the release job. Release runs are
 serialized with at most one running and one pending run; a newer dispatch can
-replace an already-pending run. Each run that executes publishes another patch. If
+replace an already-pending run. Each run with release-worthy changes publishes the
+selected next version; maintenance-only runs publish nothing. If
 `main` advances during a build, the non-fast-forward push fails rather than
 overwriting changes; start a fresh run. Failed builds/signing do not push a
 version bump or tag to `main`. The release workflow checks its bumped source itself;
@@ -84,5 +113,7 @@ run's recovery artifact. If the release does not exist, publish the existing tag
 with `gh release create vVERSION screen-translator-VERSION.apk --verify-tag
 --generate-notes`. If the release exists but its upload failed, attach the APK
 with `gh release upload vVERSION screen-translator-VERSION.apk --clobber`.
-Do not rerun the entire workflow to recover the same version: a new run bumps
-the next version. Check whether a release was already created before recovery.
+Do not rerun the entire workflow to recover the same version: after the atomic
+version/tag push it normally becomes a no-op, or publishes another version if
+new release-worthy commits arrived. It does not repair the failed publication.
+Check whether a release was already created before recovery.
